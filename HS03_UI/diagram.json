@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "author": "Anonymous maker",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-s3-devkitc-1", "id": "esp", "top": -0.18, "left": -62.63, "attrs": {} },
+    {
+      "type": "wokwi-lcd2004",
+      "id": "lcd1",
+      "top": 6.4,
+      "left": 63.2,
+      "attrs": { "pins": "i2c" }
+    },
+    { "type": "wokwi-ky-040", "id": "encoder1", "top": 212.9, "left": 66.4, "attrs": {} },
+    {
+      "type": "wokwi-buzzer",
+      "id": "bz1",
+      "top": -103.2,
+      "left": 107.4,
+      "attrs": { "volume": "0.1" }
+    },
+    {
+      "type": "wokwi-slide-potentiometer",
+      "id": "pot1",
+      "top": 302.6,
+      "left": 56.6,
+      "attrs": { "travelLength": "30" }
+    },
+    {
+      "type": "board-ssd1306",
+      "id": "oled1",
+      "top": 156.74,
+      "left": -239.77,
+      "attrs": { "i2cAddress": "0x3c" }
+    }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "esp:6", "lcd1:SDA", "green", [ "h-28.85", "v-86.4", "h134.4", "v67.2" ] ],
+    [ "esp:7", "lcd1:SCL", "green", [ "h-38.45", "v-105.6", "h134.4", "v86.4" ] ],
+    [ "esp:GND.2", "lcd1:GND", "black", [ "h38.4", "v9.6" ] ],
+    [ "esp:5V", "lcd1:VCC", "red", [ "h-48.05", "v-249.6", "h153.6", "v76.8", "h9.6" ] ],
+    [ "encoder1:SW", "esp:15", "green", [ "h28.8", "v57.7", "h-288", "v0", "h-19.2", "v-201.6" ] ],
+    [ "encoder1:DT", "esp:16", "green", [ "h38.4", "v76.9", "h-307.2", "v-201.6" ] ],
+    [ "encoder1:CLK", "esp:17", "green", [ "h48", "v96", "h-307.2", "v-201.6" ] ],
+    [ "esp:5V", "encoder1:VCC", "red", [ "h-48.05", "v67.2", "h307.2", "v-38.4" ] ],
+    [ "encoder1:GND", "esp:GND.1", "black", [ "h9.6", "v20", "h-259.2", "v-48" ] ],
+    [ "esp:GND.2", "bz1:1", "black", [ "h38.4", "v-38.4", "h67.2" ] ],
+    [ "esp:8", "bz1:2", "gold", [ "h-57.65", "v-134.4", "h259.6" ] ],
+    [ "pot1:VCC", "esp:5V", "red", [ "h-163.2", "v-124.8" ] ],
+    [ "pot1:SIG", "esp:1", "green", [ "h-182.4", "v-404", "h172.8" ] ],
+    [ "pot1:GND", "encoder1:GND", "black", [ "v0" ] ],
+    [ "oled1:VCC", "esp:3V3.2", "red", [ "v0" ] ],
+    [ "oled1:GND", "lcd1:GND", "black", [ "v-211.2", "h259.2" ] ],
+    [ "oled1:SCL", "esp:2", "green", [ "v0" ] ],
+    [ "oled1:SDA", "esp:1", "green", [ "v0" ] ]
+  ],
+  "dependencies": {}
+}

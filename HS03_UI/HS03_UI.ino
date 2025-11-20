@@ -1,0 +1,366 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Adafruit_ADS1X15.h>
+#include <string.h>
+
+// ======================
+// Cấu hình chân
+// ======================
+#define ENCODER_CLK_PIN  17   // HW-040 CLK
+#define ENCODER_DT_PIN   16   // HW-040 DT
+#define ENCODER_SW_PIN   15   // HW-040 SW (nút nhấn)
+
+#define LCD_SDA_PIN      6    // LCD2004 SDA
+#define LCD_SCL_PIN      7    // LCD2004 SCL
+
+// Bus I2C #1 cho Scan + ADS1115
+#define I2C_SCAN_SDA_PIN 1    // SDA: GPIO1
+#define I2C_SCAN_SCL_PIN 2    // SCL: GPIO2
+
+// Buzzer
+#define BUZZER_PIN       8
+
+// Đèn giao thông
+#define LED_RED_PIN      1
+#define LED_YELLOW_PIN   2
+#define LED_GREEN_PIN    4
+
+// LCD
+#define LCD_I2C_ADDR     0x27
+
+// ADS1115
+#define ADS1115_I2C_ADDR 0x48   // ADDR nối GND -> 0x48
+
+// ======================
+// Enum trạng thái
+// ======================
+enum MenuLevel {
+  LEVEL_MAIN = 0,
+  LEVEL_I2C_SUB
+};
+
+enum AppState {
+  STATE_SPLASH = 0,
+  STATE_MENU,
+  STATE_I2C_SCAN,
+  STATE_ANALOG,
+  STATE_DFROBOT_ANALOG,
+  STATE_TRAFFIC_LED,
+  STATE_SIMPLE_SCREEN
+};
+
+// ======================
+// Cấu hình menu
+// ======================
+const char* const mainMenuItems[] = {
+  "I2C",                    //  0
+  "DFRobot",                //  1
+  "Maker",                  //  2
+  "Grove",                  //  3
+  "Sensor RS485",           //  4
+  "Traffic Led",            //  5
+  "Neopixel",               //  6
+  "Max6675",                //  7
+  "Ultrasonic JSN",         //  8
+  "2x7 Segment HC595",      //  9
+  "4x7 Segment HC595",      // 10
+  "4x7 Segment TM1637",     // 11
+  "PS2",                    // 12
+  "BLE",                    // 13
+  "Analog"                  // 14
+};
+const int MAIN_MENU_COUNT = sizeof(mainMenuItems) / sizeof(mainMenuItems[0]);
+
+const char* const i2cSubMenuItems[] = {
+  "Scan",
+  "Test Data - VL53L1X",
+  "<-- Back"
+};
+const int I2C_MENU_COUNT = sizeof(i2cSubMenuItems) / sizeof(i2cSubMenuItems[0]);
+
+// ======================
+// Biến toàn cục
+// ======================
+LiquidCrystal_I2C lcd(LCD_I2C_ADDR, 20, 4);
+TwoWire I2CScanBus(1);          // I2C bus #1: SDA=1, SCL=2
+Adafruit_ADS1115 ads1115;
+bool ads1115_ok = false;
+
+MenuLevel currentLevel = LEVEL_MAIN;
+AppState  appState     = STATE_SPLASH;
+
+int currentMainIndex = 0;
+int currentI2CIndex  = 0;
+
+int  lastClkState     = HIGH;
+bool lastBtnState     = HIGH;
+unsigned long lastBtnTime     = 0;
+unsigned long lastEncoderTime = 0;
+const unsigned long BTN_DEBOUNCE      = 200; // ms
+const unsigned long ENCODER_DEBOUNCE  = 3;   // ms
+
+char headerLabel[16] = "";
+
+// Countdown 120s + buzzer 10s
+const uint16_t       COUNTDOWN_SECONDS     = 120;
+const unsigned long  BUZZER_DURATION       = 10000UL;
+unsigned long        countdownStartMillis  = 0;
+int                  countdownRemaining    = COUNTDOWN_SECONDS;
+bool                 countdownFinished     = false;
+
+bool                 buzzerActive          = false;
+unsigned long        buzzerStartMillis     = 0;
+bool                 buzzerState           = false;
+unsigned long        lastBuzzerToggleMillis = 0;
+const unsigned long  BUZZER_TOGGLE_INTERVAL = 200;
+
+// Thời gian cập nhật cho Analog & DFRobot
+const unsigned long  ANALOG_UPDATE_INTERVAL   = 200;
+unsigned long        lastAnalogUpdate         = 0;
+
+const unsigned long  DFROBOT_UPDATE_INTERVAL  = 300;
+unsigned long        lastDFRobotUpdate        = 0;
+
+// ======================
+// Prototype
+// ======================
+void onEncoderTurn(int direction);
+void onButtonClick();
+
+// Kéo các file header
+#include "Display.h"
+#include "CountdownBuzzer.h"
+#include "I2CScanMode.h"
+#include "AnalogMode.h"
+#include "DFRobotAnalog.h"
+#include "SimpleScreens.h"
+#include "TrafficLedMode.h"
+
+// ======================
+// SETUP
+// ======================
+void setup() {
+  // I2C cho LCD: bus 0 (Wire)
+  Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
+  lcd.init();
+  lcd.backlight();
+
+  // I2C bus 1 cho Scan + ADS1115
+  I2CScanBus.begin(I2C_SCAN_SDA_PIN, I2C_SCAN_SCL_PIN, 100000);
+
+  // Màn hình chào 1.5s
+  lcd.clear();
+  lcdPrintLine(0, "HShop Multi Tool Tester");
+  lcdPrintLine(1, "Version: 1.00");
+  lcdPrintLine(2, "Xin kinh chao quy khach !");
+  lcdPrintLine(3, "Xin kinh chao quy khach !");
+  delay(1500);
+
+  // Cấu hình IO
+  pinMode(ENCODER_CLK_PIN, INPUT_PULLUP);
+  pinMode(ENCODER_DT_PIN,  INPUT_PULLUP);
+  pinMode(ENCODER_SW_PIN,  INPUT_PULLUP);
+
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  pinMode(LED_RED_PIN, OUTPUT);
+  pinMode(LED_YELLOW_PIN, OUTPUT);
+  pinMode(LED_GREEN_PIN, OUTPUT);
+  digitalWrite(LED_RED_PIN, LOW);
+  digitalWrite(LED_YELLOW_PIN, LOW);
+  digitalWrite(LED_GREEN_PIN, LOW);
+
+  lastClkState = digitalRead(ENCODER_CLK_PIN);
+  lastBtnState = digitalRead(ENCODER_SW_PIN);
+
+  // ADS1115 trên I2CScanBus (SDA=1, SCL=2)
+  ads1115_ok = ads1115.begin(ADS1115_I2C_ADDR, &I2CScanBus);
+  if (ads1115_ok) {
+    ads1115.setGain(GAIN_TWOTHIRDS); // ±6.144V
+  }
+
+  // Khởi động countdown
+  countdownStartMillis = millis();
+  countdownRemaining   = COUNTDOWN_SECONDS;
+  countdownFinished    = false;
+
+  // Về menu chính
+  lcd.clear();
+  appState     = STATE_MENU;
+  currentLevel = LEVEL_MAIN;
+  strncpy(headerLabel, "Menu", sizeof(headerLabel));
+  headerLabel[sizeof(headerLabel) - 1] = '\0';
+  printMainMenuItem();
+}
+
+// ======================
+// LOOP
+// ======================
+void loop() {
+  unsigned long now = millis();
+
+  // Đếm ngược 120s + buzzer 10s
+  updateCountdown(now);
+  handleBuzzer(now);
+
+  // Cập nhật theo trạng thái
+  switch (appState) {
+    case STATE_ANALOG:
+      updateAnalogMode(now);
+      break;
+
+    case STATE_DFROBOT_ANALOG:
+      updateDFRobotAnalogMode(now);
+      break;
+
+    case STATE_TRAFFIC_LED:
+      updateTrafficLedMode(now);
+      break;
+
+    case STATE_I2C_SCAN:
+      updateI2CScanMode(now);
+      break;
+
+    default:
+      break;
+  }
+
+  // Đọc xoay encoder (CLK)
+  int clkState = digitalRead(ENCODER_CLK_PIN);
+  if (clkState != lastClkState) {
+    if (clkState == LOW && (now - lastEncoderTime) > ENCODER_DEBOUNCE) {
+      int dtState   = digitalRead(ENCODER_DT_PIN);
+      int direction = (dtState == HIGH) ? +1 : -1;
+      onEncoderTurn(direction);
+      lastEncoderTime = now;
+    }
+    lastClkState = clkState;
+  }
+
+  // Đọc nút nhấn
+  int btnState = digitalRead(ENCODER_SW_PIN);
+  if (btnState != lastBtnState) {
+    if ((now - lastBtnTime) > BTN_DEBOUNCE) {
+      if (lastBtnState == HIGH && btnState == LOW) {
+        onButtonClick();
+      }
+      lastBtnTime = now;
+    }
+    lastBtnState = btnState;
+  }
+}
+
+// ======================
+// Xử lý xoay encoder
+// ======================
+void onEncoderTurn(int direction) {
+  // Chỉ cho phép xoay khi ở MENU
+  if (appState != STATE_MENU) return;
+
+  if (currentLevel == LEVEL_MAIN) {
+    currentMainIndex += direction;
+    if (currentMainIndex < 0) currentMainIndex = MAIN_MENU_COUNT - 1;
+    if (currentMainIndex >= MAIN_MENU_COUNT) currentMainIndex = 0;
+    printMainMenuItem();
+  } else if (currentLevel == LEVEL_I2C_SUB) {
+    currentI2CIndex += direction;
+    if (currentI2CIndex < 0) currentI2CIndex = I2C_MENU_COUNT - 1;
+    if (currentI2CIndex >= I2C_MENU_COUNT) currentI2CIndex = 0;
+    printI2CSubMenuItem();
+  }
+}
+
+// ======================
+// Xử lý nút nhấn
+// ======================
+void onButtonClick() {
+  // 1. Đang ở Analog -> về MENU
+  if (appState == STATE_ANALOG) {
+    appState = STATE_MENU;
+    printMainMenuItem();
+    return;
+  }
+
+  // 2. Đang ở DFRobot Analog -> về MENU
+  if (appState == STATE_DFROBOT_ANALOG) {
+    appState = STATE_MENU;
+    currentMainIndex = 1;   // DFRobot
+    printMainMenuItem();
+    return;
+  }
+
+  // 3. Đang ở I2C Scan -> về submenu I2C
+  if (appState == STATE_I2C_SCAN) {
+    appState     = STATE_MENU;
+    currentLevel = LEVEL_I2C_SUB;
+    printI2CSubMenuItem();
+    return;
+  }
+
+  // 4. Đang ở Traffic Led -> tắt đèn & về MENU
+  if (appState == STATE_TRAFFIC_LED) {
+    stopTrafficLedMode();
+    appState = STATE_MENU;
+    printMainMenuItem();
+    return;
+  }
+
+  // 5. Đang ở SIMPLE SCREEN -> về menu phù hợp
+  if (appState == STATE_SIMPLE_SCREEN) {
+    appState = STATE_MENU;
+    if (currentLevel == LEVEL_I2C_SUB) {
+      printI2CSubMenuItem();
+    } else {
+      printMainMenuItem();
+    }
+    return;
+  }
+
+  // 6. Đang ở MENU: xử lý chọn chức năng
+  if (appState == STATE_MENU) {
+    if (currentLevel == LEVEL_MAIN) {
+      switch (currentMainIndex) {
+        case 0: // I2C
+          currentLevel    = LEVEL_I2C_SUB;
+          currentI2CIndex = 0;
+          strncpy(headerLabel, "I2C Menu", sizeof(headerLabel));
+          headerLabel[sizeof(headerLabel) - 1] = '\0';
+          printI2CSubMenuItem();
+          break;
+
+        case 1: // DFRobot
+          startDFRobotAnalogMode();
+          break;
+
+        case 5: // Traffic Led
+          startTrafficLedMode();
+          break;
+
+        case 14: // Analog (ReadAnalog)
+          startAnalogMode();
+          break;
+
+        default:
+          // Các mục khác: hiện màn hình đơn giản
+          showMainFunctionScreen(currentMainIndex);
+          break;
+      }
+    } else if (currentLevel == LEVEL_I2C_SUB) {
+      switch (currentI2CIndex) {
+        case 0: // I2C Scan
+          startI2CScanMode();
+          break;
+        case 1: // VL53L1X Test (stub)
+          showVL53L1XTestScreen();
+          break;
+        case 2: // Back
+          currentLevel = LEVEL_MAIN;
+          strncpy(headerLabel, "Menu", sizeof(headerLabel));
+          headerLabel[sizeof(headerLabel) - 1] = '\0';
+          printMainMenuItem();
+          break;
+      }
+    }
+  }
+}
