@@ -2,6 +2,7 @@
 #define I2C_SCAN_MODE_H
 
 // Quét I2C trên bus1: SDA=GPIO1, SCL=GPIO2
+// BỎ QUA địa chỉ của ADS1115 (0x48..0x4B), chỉ hiển thị thiết bị khác
 void startI2CScanMode() {
   appState = STATE_I2C_SCAN;
   lcd.clear();
@@ -24,6 +25,11 @@ void startI2CScanMode() {
     I2CScanBus.beginTransmission(addr);
     uint8_t error = I2CScanBus.endTransmission(true);
     if (error == 0) {
+      // Bỏ qua địa chỉ ADS1115 (0x48..0x4B) – không hiển thị trên LCD
+      if (addr >= 0x48 && addr <= 0x4B) {
+        continue;
+      }
+
       if (foundCount < 16) {
         foundAddrs[foundCount] = addr;
       }
@@ -44,21 +50,10 @@ void startI2CScanMode() {
     char row2[21] = "";
     char row3[21] = "";
 
-    bool   hasADS  = false;
-    uint8_t adsAddr = 0;
-
+    // In tối đa 8 địa chỉ (4 địa chỉ/dòng)
     for (uint8_t i = 0; i < foundCount && i < 8; i++) {
-      uint8_t addr  = foundAddrs[i];
-      bool    isADS = (addr >= 0x48 && addr <= 0x4B);
-
-      if (isADS) {
-        hasADS  = true;
-        adsAddr = addr;
-      }
-
       char tmp[10];
-      if (isADS) snprintf(tmp, sizeof(tmp), "*0x%02X ", addr);
-      else       snprintf(tmp, sizeof(tmp), " 0x%02X ", addr);
+      snprintf(tmp, sizeof(tmp), " 0x%02X ", foundAddrs[i]);
 
       if (i < 4) {
         strncat(row2, tmp, sizeof(row2) - strlen(row2) - 1);
@@ -68,14 +63,7 @@ void startI2CScanMode() {
     }
 
     lcdPrintLine(2, row2[0] ? row2 : "                ");
-
-    if (hasADS) {
-      char adsLine[21];
-      snprintf(adsLine, sizeof(adsLine), "ADS1115 @0x%02X ", adsAddr);
-      lcdPrintLine(3, adsLine);
-    } else {
-      lcdPrintLine(3, row3[0] ? row3 : "Btn: Back       ");
-    }
+    lcdPrintLine(3, row3[0] ? row3 : "Btn: Back       ");
   }
 }
 

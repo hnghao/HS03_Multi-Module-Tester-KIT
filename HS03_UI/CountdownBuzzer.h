@@ -14,24 +14,18 @@ void updateCountdown(unsigned long now) {
     updateHeaderRow();
   }
 
+  // Khi hết giờ lần đầu tiên -> bật buzzer, KHÔNG tự tắt nữa
   if (remain == 0 && !buzzerActive) {
-    countdownFinished = true;
-    buzzerActive      = true;
-    buzzerStartMillis = now;
-    buzzerState       = false;
-    lastBuzzerToggleMillis = 0;
+    countdownFinished      = true;
+    buzzerActive           = true;
+    buzzerState            = false;
+    lastBuzzerToggleMillis = 0;   // bắt đầu chu kỳ bíp
   }
 }
 
-// Điều khiển buzzer bíp bíp 10s
+// Điều khiển buzzer bíp bíp LIÊN TỤC (không giới hạn 10s nữa)
 void handleBuzzer(unsigned long now) {
   if (!buzzerActive) return;
-
-  if (now - buzzerStartMillis >= BUZZER_DURATION) {
-    buzzerActive = false;
-    digitalWrite(BUZZER_PIN, LOW);
-    return;
-  }
 
   if (now - lastBuzzerToggleMillis >= BUZZER_TOGGLE_INTERVAL) {
     lastBuzzerToggleMillis = now;

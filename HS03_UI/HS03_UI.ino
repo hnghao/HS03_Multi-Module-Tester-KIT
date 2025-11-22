@@ -2,6 +2,7 @@
 #include <LiquidCrystal_I2C.h>
 #include <Adafruit_ADS1X15.h>
 #include <string.h>
+#include <Adafruit_NeoPixel.h>   // THÊM
 
 // ======================
 // Cấu hình chân
@@ -25,6 +26,10 @@
 #define LED_YELLOW_PIN   2
 #define LED_GREEN_PIN    4
 
+#define NEOPIXEL_PIN       5      // WS2812 tại GPIO1
+#define NEOPIXEL_LED_COUNT 150    // Tối đa 150 led
+
+
 // LCD
 #define LCD_I2C_ADDR     0x27
 
@@ -46,7 +51,8 @@ enum AppState {
   STATE_ANALOG,
   STATE_DFROBOT_ANALOG,
   STATE_TRAFFIC_LED,
-  STATE_SIMPLE_SCREEN
+  STATE_SIMPLE_SCREEN,
+  STATE_NEOPIXEL
 };
 
 // ======================
@@ -82,6 +88,11 @@ const int I2C_MENU_COUNT = sizeof(i2cSubMenuItems) / sizeof(i2cSubMenuItems[0]);
 // Biến toàn cục
 // ======================
 LiquidCrystal_I2C lcd(LCD_I2C_ADDR, 20, 4);
+
+Adafruit_NeoPixel neoStrip(NEOPIXEL_LED_COUNT, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+unsigned long lastNeoUpdate = 0;
+const unsigned long NEOPIXEL_UPDATE_INTERVAL = 50;  // ms, tốc độ chạy led
+
 TwoWire I2CScanBus(1);          // I2C bus #1: SDA=1, SCL=2
 Adafruit_ADS1115 ads1115;
 bool ads1115_ok = false;
@@ -135,6 +146,7 @@ void onButtonClick();
 #include "DFRobotAnalog.h"
 #include "SimpleScreens.h"
 #include "TrafficLedMode.h"
+#include "NeoPixelMode.h"
 
 // ======================
 // SETUP
@@ -147,6 +159,11 @@ void setup() {
 
   // I2C bus 1 cho Scan + ADS1115
   I2CScanBus.begin(I2C_SCAN_SDA_PIN, I2C_SCAN_SCL_PIN, 100000);
+
+  // Khởi tạo NeoPixel (WS2812)
+  neoStrip.begin();
+  neoStrip.show();        // Tắt hết
+  neoStrip.setBrightness(64);   // Độ sáng vừa phải (0–255)
 
   // Màn hình chào 1.5s
   lcd.clear();
@@ -220,6 +237,10 @@ void loop() {
 
     case STATE_I2C_SCAN:
       updateI2CScanMode(now);
+      break;
+
+    case STATE_NEOPIXEL:
+      updateNeoPixelMode(now);
       break;
 
     default:
@@ -317,7 +338,15 @@ void onButtonClick() {
     return;
   }
 
-  // 6. Đang ở MENU: xử lý chọn chức năng
+  // 6. Đang ở NeoPixel -> tắt led & về MENU
+  if (appState == STATE_NEOPIXEL) {
+    stopNeoPixelMode();        // tắt hết NeoPixel
+    appState = STATE_MENU;
+    printMainMenuItem();
+    return;
+  }
+
+  // 7. Đang ở MENU: xử lý chọn chức năng
   if (appState == STATE_MENU) {
     if (currentLevel == LEVEL_MAIN) {
       switch (currentMainIndex) {
@@ -339,6 +368,10 @@ void onButtonClick() {
 
         case 14: // Analog (ReadAnalog)
           startAnalogMode();
+          break;
+
+        case 6: // Neopixel
+          startNeoPixelMode();
           break;
 
         default:
@@ -364,3 +397,4 @@ void onButtonClick() {
     }
   }
 }
+
