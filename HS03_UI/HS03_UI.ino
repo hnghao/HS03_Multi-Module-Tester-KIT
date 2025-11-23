@@ -2,7 +2,8 @@
 #include <LiquidCrystal_I2C.h>
 #include <Adafruit_ADS1X15.h>
 #include <string.h>
-#include <Adafruit_NeoPixel.h>   // THÊM
+#include <Adafruit_NeoPixel.h>   // NeoPixel WS2812
+#include <LedControl.h>          // MAX7219
 
 // ======================
 // Cấu hình chân
@@ -26,9 +27,8 @@
 #define LED_YELLOW_PIN   2
 #define LED_GREEN_PIN    4
 
-#define NEOPIXEL_PIN       5      // WS2812 tại GPIO1
+#define NEOPIXEL_PIN       5      // WS2812 tại GPIO5
 #define NEOPIXEL_LED_COUNT 150    // Tối đa 150 led
-
 
 // LCD
 #define LCD_I2C_ADDR     0x27
@@ -36,53 +36,77 @@
 // ADS1115
 #define ADS1115_I2C_ADDR 0x48   // ADDR nối GND -> 0x48
 
+// MAX7219 Matrix Led (8x8, 8x32)
+#define MATRIX_DIN_PIN   1   // DIN -> GPIO1
+#define MATRIX_CS_PIN    2   // CS  -> GPIO2
+#define MATRIX_CLK_PIN   4   // CLK -> GPIO4
+#define MATRIX_DEVICE_COUNT 4   // hỗ trợ tối đa 4 module (8x32 dùng 4 cái 8x8)
+
+// Tạo đối tượng LedControl duy nhất
+LedControl matrixLc = LedControl(MATRIX_DIN_PIN, MATRIX_CLK_PIN, MATRIX_CS_PIN, MATRIX_DEVICE_COUNT);
+
 // ======================
 // Enum trạng thái
 // ======================
 enum MenuLevel {
   LEVEL_MAIN = 0,
-  LEVEL_I2C_SUB
+  LEVEL_I2C_SUB,
+  LEVEL_MATRIX_SUB          // sub-menu cho Led Matrix
 };
 
 enum AppState {
-  STATE_SPLASH = 0,
+  STATE_SPLASH,
   STATE_MENU,
   STATE_I2C_SCAN,
   STATE_ANALOG,
   STATE_DFROBOT_ANALOG,
   STATE_TRAFFIC_LED,
+  STATE_NEOPIXEL,
   STATE_SIMPLE_SCREEN,
-  STATE_NEOPIXEL
+  STATE_MATRIX_8X8,     // Matrix 8x8
+  STATE_MATRIX_8X32     // Matrix 8x32
 };
 
 // ======================
 // Cấu hình menu
 // ======================
-const char* const mainMenuItems[] = {
-  "I2C",                    //  0
-  "DFRobot",                //  1
-  "Maker",                  //  2
-  "Grove",                  //  3
-  "Sensor RS485",           //  4
-  "Traffic Led",            //  5
-  "Neopixel",               //  6
-  "Max6675",                //  7
-  "Ultrasonic JSN",         //  8
-  "2x7 Segment HC595",      //  9
-  "4x7 Segment HC595",      // 10
-  "4x7 Segment TM1637",     // 11
-  "PS2",                    // 12
-  "BLE",                    // 13
-  "Analog"                  // 14
+// Menu chính: 1 mục "Led Matrix"
+const char* mainMenuItems[] = {
+  "I2C",                 //  0
+  "DFRobot",             //  1
+  "Maker",               //  2
+  "Grove",               //  3
+  "Sensor RS485",        //  4
+  "Traffic Led",         //  5
+  "Neopixel",            //  6
+  "Max6675",             //  7
+  "Ultrasonic JSN",      //  8
+  "2x7 Segment HC595",   //  9
+  "4x7 Segment HC595",   // 10
+  "4x7 Segment TM1637",  // 11
+  "PS2",                 // 12
+  "BLE",                 // 13
+  "Analog",              // 14
+  "Led Matrix"           // 15
 };
+
 const int MAIN_MENU_COUNT = sizeof(mainMenuItems) / sizeof(mainMenuItems[0]);
 
+// Sub-menu I2C
 const char* const i2cSubMenuItems[] = {
   "Scan",
   "Test Data - VL53L1X",
   "<-- Back"
 };
 const int I2C_MENU_COUNT = sizeof(i2cSubMenuItems) / sizeof(i2cSubMenuItems[0]);
+
+// Sub-menu Led Matrix
+const char* const matrixSubMenuItems[] = {
+  "Matrix 8x8",
+  "Matrix 8x32",
+  "<-- Back"
+};
+const int MATRIX_MENU_COUNT = sizeof(matrixSubMenuItems) / sizeof(matrixSubMenuItems[0]);
 
 // ======================
 // Biến toàn cục
@@ -93,15 +117,17 @@ Adafruit_NeoPixel neoStrip(NEOPIXEL_LED_COUNT, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ80
 unsigned long lastNeoUpdate = 0;
 const unsigned long NEOPIXEL_UPDATE_INTERVAL = 50;  // ms, tốc độ chạy led
 
-TwoWire I2CScanBus(1);          // I2C bus #1: SDA=1, SCL=2
+// I2C bus 1 cho Scan + ADS1115
+TwoWire I2CScanBus(1);
 Adafruit_ADS1115 ads1115;
 bool ads1115_ok = false;
 
 MenuLevel currentLevel = LEVEL_MAIN;
 AppState  appState     = STATE_SPLASH;
 
-int currentMainIndex = 0;
-int currentI2CIndex  = 0;
+int currentMainIndex   = 0;
+int currentI2CIndex    = 0;
+int currentMatrixIndex = 0;    // index cho sub-menu Led Matrix
 
 int  lastClkState     = HIGH;
 bool lastBtnState     = HIGH;
@@ -137,6 +163,10 @@ unsigned long        lastDFRobotUpdate        = 0;
 // ======================
 void onEncoderTurn(int direction);
 void onButtonClick();
+void printMatrixSubMenuItem();
+
+// Hàm vẽ header riêng cho Led Matrix: "Matrix 1/2" hoặc "Matrix 2/2"
+void drawMatrixHeader(uint8_t funcIndex);
 
 // Kéo các file header
 #include "Display.h"
@@ -147,6 +177,40 @@ void onButtonClick();
 #include "SimpleScreens.h"
 #include "TrafficLedMode.h"
 #include "NeoPixelMode.h"
+#include "MatrixLedMode.h"   // led matrix 8x8 & 8x32 (mưa rơi)
+
+// ======================
+// Hàm vẽ header cho Led Matrix
+// ======================
+// funcIndex: 0 -> Matrix 1/2, 1 -> Matrix 2/2
+// ======================
+// Hàm vẽ header cho Led Matrix
+// ======================
+// funcIndex: 0 -> Matrix 1/2, 1 -> Matrix 2/2, 2 (Back) vẫn coi là 2/2
+void drawMatrixHeader(uint8_t funcIndex) {
+  // Xác định số chức năng hiện tại (1/2 hoặc 2/2)
+  uint8_t cur = (funcIndex > 1) ? 2 : (funcIndex + 1);  // chỉ 2 chức năng chính: 8x8 & 8x32
+
+  // Đảm bảo countdownRemaining không âm (phòng hờ)
+  int cd = countdownRemaining;
+  if (cd < 0) cd = 0;
+
+  // Ghép cả dòng 0: "Matrix X/2  NNs"
+  // Ví dụ: "Matrix 1/2   98s"
+  char buf[21];
+  snprintf(buf, sizeof(buf), "Matrix %u/2 %3ds", cur, cd);
+
+  // Đệm thêm khoảng trắng cho đủ 20 ký tự
+  uint8_t len = strlen(buf);
+  while (len < 20) {
+    buf[len++] = ' ';
+  }
+  buf[20] = '\0';
+
+  lcd.setCursor(0, 0);
+  lcd.print(buf);
+}
+
 
 // ======================
 // SETUP
@@ -164,6 +228,10 @@ void setup() {
   neoStrip.begin();
   neoStrip.show();        // Tắt hết
   neoStrip.setBrightness(64);   // Độ sáng vừa phải (0–255)
+
+  // Khởi tạo MAX7219 Matrix rồi tắt hết để tiết kiệm năng lượng
+  matrixInitDevices();    // setIntensity, clear, bật chip
+  matrixShutdownAll();    // sau đó shutdown toàn bộ, chỉ bật khi vào Led Matrix
 
   // Màn hình chào 1.5s
   lcd.clear();
@@ -243,6 +311,14 @@ void loop() {
       updateNeoPixelMode(now);
       break;
 
+    case STATE_MATRIX_8X8:
+      updateMatrix8x8Mode();     // mưa rơi 8x8
+      break;
+
+    case STATE_MATRIX_8X32:
+      updateMatrix8x32Mode();    // mưa rơi 8x32
+      break;
+
     default:
       break;
   }
@@ -270,6 +346,22 @@ void loop() {
     }
     lastBtnState = btnState;
   }
+
+  // ------------------------------
+  // ĐẢM BẢO HEADER LED MATRIX LUÔN ĐÚNG
+  // ------------------------------
+  // Nếu đang ở sub-menu Led Matrix
+  if (appState == STATE_MENU && currentLevel == LEVEL_MATRIX_SUB) {
+    drawMatrixHeader(currentMatrixIndex);
+  }
+  // Nếu đang chạy Matrix 8x8
+  else if (appState == STATE_MATRIX_8X8) {
+    drawMatrixHeader(0);
+  }
+  // Nếu đang chạy Matrix 8x32
+  else if (appState == STATE_MATRIX_8X32) {
+    drawMatrixHeader(1);
+  }
 }
 
 // ======================
@@ -289,6 +381,11 @@ void onEncoderTurn(int direction) {
     if (currentI2CIndex < 0) currentI2CIndex = I2C_MENU_COUNT - 1;
     if (currentI2CIndex >= I2C_MENU_COUNT) currentI2CIndex = 0;
     printI2CSubMenuItem();
+  } else if (currentLevel == LEVEL_MATRIX_SUB) {
+    currentMatrixIndex += direction;
+    if (currentMatrixIndex < 0) currentMatrixIndex = MATRIX_MENU_COUNT - 1;
+    if (currentMatrixIndex >= MATRIX_MENU_COUNT) currentMatrixIndex = 0;
+    printMatrixSubMenuItem();   // in lại menu + header Matrix
   }
 }
 
@@ -332,6 +429,8 @@ void onButtonClick() {
     appState = STATE_MENU;
     if (currentLevel == LEVEL_I2C_SUB) {
       printI2CSubMenuItem();
+    } else if (currentLevel == LEVEL_MATRIX_SUB) {
+      printMatrixSubMenuItem();
     } else {
       printMainMenuItem();
     }
@@ -346,7 +445,16 @@ void onButtonClick() {
     return;
   }
 
-  // 7. Đang ở MENU: xử lý chọn chức năng
+  // 7. Đang ở Matrix Led -> nút nhấn để quay về sub-menu Led Matrix
+  if (appState == STATE_MATRIX_8X8 || appState == STATE_MATRIX_8X32) {
+    stopMatrixLedMode();       // clear + shutdown toàn bộ matrix
+    appState     = STATE_MENU;
+    currentLevel = LEVEL_MATRIX_SUB;
+    printMatrixSubMenuItem();
+    return;
+  }
+
+  // 8. Đang ở MENU: xử lý chọn chức năng
   if (appState == STATE_MENU) {
     if (currentLevel == LEVEL_MAIN) {
       switch (currentMainIndex) {
@@ -369,6 +477,14 @@ void onButtonClick() {
         case 14: // Analog (ReadAnalog)
           startAnalogMode();
           break;
+
+        case 15: { // Led Matrix (sub-menu)
+          currentLevel       = LEVEL_MATRIX_SUB;
+          currentMatrixIndex = 0;
+          strncpy(headerLabel, "Matrix", sizeof(headerLabel));
+          headerLabel[sizeof(headerLabel) - 1] = '\0';
+          printMatrixSubMenuItem();
+        } break;
 
         case 6: // Neopixel
           startNeoPixelMode();
@@ -394,7 +510,50 @@ void onButtonClick() {
           printMainMenuItem();
           break;
       }
+    } else if (currentLevel == LEVEL_MATRIX_SUB) {
+      switch (currentMatrixIndex) {
+        case 0: { // Matrix 8x8
+          appState = STATE_MATRIX_8X8;
+          drawMatrixHeader(0);       // Header: "Matrix 1/2"
+          lcdPrintLine(1, "Nhan nut de thoat");
+          lcdPrintLine(2, "LED: hieu ung mua");
+          lcdPrintLine(3, " ");
+          startMatrix8x8Mode();
+        } break;
+
+        case 1: { // Matrix 8x32
+          appState = STATE_MATRIX_8X32;
+          drawMatrixHeader(1);       // Header: "Matrix 2/2"
+          lcdPrintLine(1, "Nhan nut de thoat");
+          lcdPrintLine(2, "LED: hieu ung mua");
+          lcdPrintLine(3, " ");
+          startMatrix8x32Mode();
+        } break;
+
+        case 2: { // Back
+          currentLevel = LEVEL_MAIN;
+          strncpy(headerLabel, "Menu", sizeof(headerLabel));
+          headerLabel[sizeof(headerLabel) - 1] = '\0';
+          printMainMenuItem();
+        } break;
+      }
     }
   }
 }
 
+// ======================
+// In sub-menu Led Matrix
+// ======================
+void printMatrixSubMenuItem() {
+  lcd.clear();
+
+  // Header riêng cho Led Matrix: Matrix X/2 (countdown vẫn do updateCountdown() vẽ bên phải)
+  drawMatrixHeader(currentMatrixIndex);
+
+  // Dòng 1: tên option hiện tại
+  lcdPrintLine(1, matrixSubMenuItems[currentMatrixIndex]);
+
+  // Dòng 2-3: hướng dẫn
+  lcdPrintLine(2, "Nhan nut de chon");
+  lcdPrintLine(3, "Xoay de doi muc");
+}
