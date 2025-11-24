@@ -10,10 +10,11 @@
 extern LedControl matrixLc;
 
 // ----------------------------------
-// Khởi tạo tất cả các MAX7219 (cho mode dùng LedControl)
+// Khởi tạo tất cả các MAX7219 (dùng LedControl)
 // ----------------------------------
+// Dùng cho bước khởi tạo ban đầu trong setup()
 inline void matrixInitDevices() {
-  for (uint8_t dev = 0; dev < 4; dev++) {   // hỗ trợ tối đa 4 module
+  for (uint8_t dev = 0; dev < MATRIX_DEVICE_COUNT; dev++) {
     matrixLc.shutdown(dev, false);          // bật chip
     matrixLc.setIntensity(dev, 8);          // độ sáng trung bình 0..15
     matrixLc.clearDisplay(dev);             // xóa toàn bộ
@@ -22,104 +23,16 @@ inline void matrixInitDevices() {
 
 // Tắt hoàn toàn tất cả MAX7219 (tiết kiệm năng lượng)
 inline void matrixShutdownAll() {
-  for (uint8_t dev = 0; dev < 4; dev++) {
+  for (uint8_t dev = 0; dev < MATRIX_DEVICE_COUNT; dev++) {
     matrixLc.shutdown(dev, true);           // shutdown = OFF
   }
-}
-
-// Xóa toàn bộ các ma trận (LedControl)
-inline void matrixClearAll() {
-  for (uint8_t dev = 0; dev < 4; dev++) {
-    matrixLc.clearDisplay(dev);
-  }
-}
-
-// ======================
-// MODE 8x8 (mưa rơi – LedControl)
-// ======================
-
-// Kích thước 8x8 dùng device 0
-static const uint8_t M8_WIDTH  = 8;
-static const uint8_t M8_HEIGHT = 8;
-
-// Cấu hình hiệu ứng mưa cho 8x8
-static const uint16_t M8_UPDATE_INTERVAL = 80;  // ms giữa mỗi bước rơi
-static const uint8_t  M8_TAIL_LENGTH     = 3;   // độ dài vệt mưa (đuôi)
-static const uint8_t  M8_START_PROB      = 35;  // % xác suất xuất hiện giọt mới trên mỗi cột
-
-// headY[col] = vị trí “đầu giọt mưa” trên cột đó (-1 nghĩa là cột đang không có giọt mưa)
-static int8_t        m8_headY[M8_WIDTH];
-static unsigned long m8_lastUpdate = 0;
-
-// Một bước hiệu ứng mưa trên 8x8 dùng LedControl (device 0)
-inline void matrix8x8_rainStep() {
-  matrixClearAll();  // xóa tất cả module, chủ yếu dùng device 0
-
-  for (uint8_t col = 0; col < M8_WIDTH; col++) {
-    // Nếu cột đang có giọt mưa -> cho rơi xuống thêm 1 hàng
-    if (m8_headY[col] >= 0) {
-      m8_headY[col]++;
-    }
-
-    // Nếu giọt mưa đã rơi xuống dưới cả đuôi thì reset cột
-    if (m8_headY[col] - (int8_t)M8_TAIL_LENGTH >= M8_HEIGHT) {
-      m8_headY[col] = -1;
-    }
-
-    // Nếu không có giọt mưa ở cột này -> random tạo giọt mới
-    if (m8_headY[col] < 0) {
-      if (random(100) < M8_START_PROB) {
-        m8_headY[col] = 0;  // bắt đầu từ hàng trên cùng
-      }
-    }
-
-    // Vẽ giọt mưa + đuôi cho cột này
-    if (m8_headY[col] >= 0) {
-      for (uint8_t t = 0; t < M8_TAIL_LENGTH; t++) {
-        int8_t y = m8_headY[col] - t;  // các điểm phía trên “đầu” tạo thành vệt
-        if (y >= 0 && y < (int8_t)M8_HEIGHT) {
-          // device 0 là module 8x8 đơn
-          matrixLc.setLed(0, y, col, true);
-        }
-      }
-    }
-  }
-}
-
-// Gọi khi bắt đầu mode Matrix 8x8
-inline void startMatrix8x8Mode() {
-  // Bật lại toàn bộ chip (trong trường hợp đang shutdown)
-  for (uint8_t dev = 0; dev < 4; dev++) {
-    matrixLc.shutdown(dev, false);
-  }
-
-  matrixClearAll();   // đảm bảo sạch trước khi chạy
-
-  // Khởi tạo random
-  randomSeed(analogRead(0));
-
-  // Ban đầu không có giọt mưa nào
-  for (uint8_t col = 0; col < M8_WIDTH; col++) {
-    m8_headY[col] = -1;
-  }
-
-  m8_lastUpdate = millis();
-}
-
-// Được gọi liên tục trong loop khi đang ở STATE_MATRIX_8X8
-inline void updateMatrix8x8Mode() {
-  unsigned long now = millis();
-  if (now - m8_lastUpdate < M8_UPDATE_INTERVAL) return;
-  m8_lastUpdate = now;
-
-  matrix8x8_rainStep();
 }
 
 // ======================
 // MODE 8x32 (MD_MAX72XX, hiệu ứng mưa)
 // ======================
 
-// Loại module: đa số module MAX7219 8x8, 8x32 đều là kiểu FC16
+// Đa số module MAX7219 8x8, 8x32 đều là kiểu FC16
 #define MATRIX_HARDWARE_TYPE  MD_MAX72XX::FC16_HW
 
 // Các macro MATRIX_DIN_PIN, MATRIX_CLK_PIN, MATRIX_CS_PIN, MATRIX_DEVICE_COUNT
@@ -133,7 +46,7 @@ static MD_MAX72XX matrixMx(
 );
 
 // Kích thước ma trận
-static const uint8_t MATRIX32_WIDTH  = 8 * MATRIX_DEVICE_COUNT;  // 32 cột
+static const uint8_t MATRIX32_WIDTH  = 8 * MATRIX_DEVICE_COUNT;  // 32 cột (4 module 8x8)
 static const uint8_t MATRIX32_HEIGHT = 8;                        // 8 hàng
 
 // Cấu hình hiệu ứng mưa
@@ -145,7 +58,7 @@ static const uint8_t  MATRIX32_START_PROB      = 30;  // % xác suất xuất hi
 static int8_t        matrix32_headY[MATRIX32_WIDTH];
 static unsigned long matrix32_lastUpdate = 0;
 
-// Một bước cập nhật hiệu ứng mưa (logic y hệt code test 8x32 của bạn)
+// Một bước cập nhật hiệu ứng mưa (logic y hệt code test 8x32 ban đầu)
 inline void matrix8x32_rainStep() {
   matrixMx.clear();  // mỗi frame vẽ lại từ đầu
 
@@ -209,9 +122,8 @@ inline void updateMatrix8x32Mode() {
 
 // Dừng tất cả hiệu ứng + tắt luôn chip để tiết kiệm
 inline void stopMatrixLedMode() {
-  matrixClearAll();   // clear bằng LedControl (8x8)
-  matrixMx.clear();   // clear bằng MD_MAX72XX (8x32)
-  matrixShutdownAll();  // shutdown toàn bộ MAX7219
+  matrixMx.clear();     // clear bằng MD_MAX72XX (8x32)
+  matrixShutdownAll();  // shutdown toàn bộ MAX7219 qua LedControl
 }
 
 #endif  // MATRIX_LED_MODE_H
