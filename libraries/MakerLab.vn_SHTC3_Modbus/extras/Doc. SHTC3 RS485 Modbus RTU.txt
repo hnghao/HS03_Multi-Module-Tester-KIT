@@ -1,0 +1,253 @@
+===================================================================================================
+SƠ ĐỒ CHÂN					|
+================================================|
+
+Chuẩn đấu dây:
+	|
+	V+	- Nâu			:	5V
+	V-	- Đen			:	GND
+	485A	- Xanh lá (Vàng)	:	A+	---	RXD	:	2 (RX) hoặc 0 (RX)
+	485B	- Xanh dương		:	B-	---	TXD	:	3 (TX) hoặc 1 (TX)
+
+SoftwareSerial::SoftwareSerial(uint8_t receivePin, uint8_t transmitPin)
+|
+SoftwareSerial RS485(2, 3); // RX, TX
+
+===================================================================================================
+CÁC DÒNG CẢM BIẾN				|
+================================================|
+
+SHTC3	- IP67 V1 RS485 Modbus RTU	-> https://hshop.vn/products/cam-bien-do-am-nhiet-do-khong-khi-shtc3-temperature-humidity-sensor-ip67-v1-rs485-modbus-rtu
+	| Vỏ IP67 V1 có thiết kế chống bụi
+
+SHTC3	- V2 RS485 Modbus RTU		-> https://hshop.vn/products/cam-bien-do-am-nhiet-do-khong-khi-shtc3-temperature-humidity-sensor-v3-rs485-modbus-rtu
+	| Vỏ V2 có lớp vỏ ngoài bằng nhựa PE
+
+SHTC3	- V3 RS485 Modbus RTU		-> https://hshop.vn/products/cam-bien-do-am-nhiet-do-khong-khi-shtc3-temperature-humidity-sensor-v3-rs485-modbus-rtu
+	| Vỏ V3 có lớp vỏ ngoài bằng PVC
+
+SHTC3	- V4 RS485 Modbus RTU		-> https://hshop.vn/products/cam-bien-do-am-nhiet-do-khong-khi-shtc3-temperature-humidity-sensor-v4-rs485-modbus-rtu
+	| Vỏ V4 có thiết kế chống bụi, nước
+
+===================================================================================================
+CRC						|
+================================================|
+
+CRC16_MODBUS
+	|
+	-> http://www.sunshine2k.de/coding/javascript/crc/crc_js.html
+	|
+	* Lưu ý, thứ tự Byte CRC thấp và cao mà cảm biến phản hồi về
+
+===================================================================================================
+CẤU TRÚC KHUNG DỮ LIỆU				|
+================================================|
+
+* Sử dụng giao thức truyền thông Modbus-RTU
+	|
+1 Byte	: Mã địa chỉ	(Addr)	- Địa chỉ của cảm biến, là địa chỉ duy nhất trong mạng truyền thông này (mặc định của nsx là 0x01)
+1 Byte	: Mã hàm	(Func)	- Chỉ thị lệnh do vi điều khiển gửi xuống cho cảm biến
+N Byte	: Dữ liệu	(Data)
+2 Byte	: CRC 16 bit	(CRC)
+
+Khung truyền Master -> Slave
+|
+[Addr]					: 1 Byte
+[Func]					: 1 Byte
+[Data]	* Địa chỉ thanh ghi bắt đầu	: 2 Byte
+|	* Độ dài thanh ghi		: 2 Byte
+[CRC]	* CRC Byte thấp			: 1 Byte
+	* CRC Byte cao			: 1 Byte
+
+===================================================================================================
+ĐỊA CHỈ THANH GHI				|
+================================================|
+
+Bảng địa chỉ thanh ghi (dùng cho "mã hàm")
+MÃ HÀM 0X03 - Thực hiện chức năng ĐỌC (READ)
+MÃ HÀM 0X06 - Thực hiện chức năng GHI (WRITE)
+|
+0x0000		Giá trị độ ẩm			Only-Read	! Trả về giá trị x10 lần giá trị thực
+0x0001		Giá trị nhiệt độ		Only-Read	! Trả về giá trị x10 lần giá trị thực
+|
+0x07D0		Giá trị "Mã địa chỉ"		Read/Write	Mặc định: 0x01
+0x07D1		Giá trị "Baudrate"		Read/Write	Mặc định: 9600 bit/s
+|		* 0 : 2400 bit/s
+|		* 1 : 4800 bit/s
+|		* 2 : 9600 bit/s
+|
+0x0050		Giá trị hiệu chuẩn nhiệt độ	Read/Write
+0x0051		Giá trị hiệu chuẩn độ ẩm	Read/Write
+
+===================================================================================================
+NHIỆT ĐỘ & ĐỘ ẨM				|
+================================================|
+
+# Đọc giá trị Nhiệt độ và Độ ẩm, với cảm biến địa chỉ 0x01
+|
+Lệnh gửi:
+0x	01	03	00	00	00	02	C4	0B
+|			|		|
+|			|		Yêu cầu lấy 2 Byte liền kề trên thanh ghi
+|			Bắt đầu từ thanh ghi 0x0000
+|
+Phản hồi:
+0x	01	03	04	xx	xx	xx	xx	L-CRC	H-CRC
+			|	|		|
+			|	|		Giá trị Nhiệt độ
+			|	Giá trị Độ ẩm
+			4 Byte trả về
+
+-------------------------------------------------
+
+# Chỉ đọc giá trị Nhiệt độ, với cảm biến địa chỉ 0x01
+|
+Lệnh gửi:
+0x	01	03	00	01	00	01	D5	CA
+|			|		|
+|			|		Yêu cầu lấy 1 Byte trên thanh ghi
+|			Bắt đầu từ thanh ghi 0x0001
+|
+Phản hồi:
+0x	01	03	02	xx	xx	L-CRC	H-CRC
+			|	|
+			|	Giá trị Nhiệt độ
+			2 Byte trả về
+
+-------------------------------------------------
+
+# Chỉ đọc giá trị Độ ẩm, với cảm biến địa chỉ 0x01
+|
+Lệnh gửi:
+0x	01	03	00	00	00	01	84	0A
+|			|		|
+|			|		Yêu cầu lấy 1 Byte trên thanh ghi
+|			Bắt đầu từ thanh ghi 0x0000
+|
+Phản hồi:
+0x	01	03	02	xx	xx	L-CRC	H-CRC
+			|	|
+			|	Giá trị Độ ẩm
+			2 Byte trả về
+
+-------------------------------------------------
+
+*** Lưu ý: giá trị Nhiệt độ
+	_ Có tất cả 16 bit, tức dãi phạm vi đo có thể lên tới 65,536 giá trị khác nhau
+	_ Xét giá trị DƯƠNG sẽ từ [0 : 65,535]
+	|
+	_ Nếu chia ra làm 2 phần cho ÂM và DƯƠNG thì mỗi bên có thể đại diện cho 32,768 giá trị khác nhau
+	_ Xét cả giá trị ÂM và DƯƠNG từ [-32,768 : -1] và [0 : 32,767]
+	|	Với 0 		= 0x0000
+	|	Với 32,767	= 0x7FFF
+	|	Với -32,768	= 0x8000	= 32,768 - 65,536
+	|	Với -1		= 0xFFFF	= 65,535 - 65,536
+
+===================================================================================================
+MÃ ĐỊA CHỈ					|
+================================================|
+
+# Thay đổi giá trị "Mã địa chỉ" của cảm biến, từ địa chỉ 0x01 sang 0x05
+|
+Lệnh gửi:
+0x	01	06	07	D0	00	05	49	44
+|			|		|
+|			|		Ghi giá trị này (0x0005) vào thanh ghi đã chọn
+|			Thanh ghi chứa giá trị "Mã địa chỉ"
+|
+Phản hồi:
+*** KHUNG PHẢN HỒI PHẢI GIỐNG NHƯ LỆNH GỬI ĐỂ XÁC NHẬN ĐÃ CẤU HÌNH ĐÚNG NHƯ THẾ
+
+# Ngược lại, đổi từ địa chỉ 0x05 sang 0x01
+|
+Lệnh gửi:
+0x	05	06	07	D0	00	01	49	03
+			|		|
+			|		Ghi giá trị này (0x0001) vào thanh ghi đã chọn
+			Thanh ghi chứa giá trị "Mã địa chỉ"
+
+-------------------------------------------------
+
+# Để đọc giá trị "Mã địa chỉ" của cảm biến
+| Tùy thuộc hiện tại đang có bao nhiêu thiết bị trên mạng RS485
+| Khi thực hiện lệnh gửi này, nó sẽ gửi đến tất cả cảm biến có trên lưới mạng này
+|	|
+| Bản thân mỗi cảm biến trên mạng lưới này, nó sẽ gửi phản hồi ngược lại kèm thông tin của nó
+|
+Lệnh gửi:
+0x	FF	03	07	D0	00	01	91	59
+|			|		|
+|			|		Yêu cầu lấy 1 Byte trên thanh ghi
+|			Bắt đầu từ thanh ghi (0x07D0) chứa giá trị "Mã địa chỉ"
+|
+Phản hồi (từ cảm biến địa chỉ 0x01):
+0x	01	03	02	00	01	79	84
+|			|	|
+|			|	Giá trị "Mã địa chỉ"
+|			2 Byte trả về
+|
+Phản hồi (từ cảm biến địa chỉ 0x05):
+0x	05	03	02	00	05	89	87
+			|	|
+			|	Giá trị "Mã địa chỉ"
+			2 Byte trả về
+
+===================================================================================================
+BAUDRATE					|
+================================================|
+
+* Có thể chọn 3 mức Baudrate để giao tiếp: 2400, 4800, 9600 bit/s
+* Trong đó, Baudrate mặc định là 4800 bit/s
+|
+|	0 : 2400 bit/s
+|	1 : 4800 bit/s
+|	2 : 9600 bit/s
+|
+* Không trả về kí tự kết thúc (Append Nothing)
+
+-------------------------------------------------
+
+# Cài đặt "Baudrate" giá trị 9600 bit/s cho cảm biến có địa chỉ 0x01
+|
+Lệnh gửi:
+0x	01	06	07	D1	00	02	59	46
+|			|		|
+|			|		Ghi giá trị này (0x0002) vào thanh ghi đã chọn
+|			Thanh ghi chứa giá trị "Baudrate"
+|
+Phản hồi:
+*** KHUNG PHẢN HỒI PHẢI GIỐNG NHƯ LỆNH GỬI ĐỂ XÁC NHẬN ĐÃ CẤU HÌNH ĐÚNG NHƯ THẾ
+
+# Cài đặt Baudrate 4800
+|
+Lệnh gửi:
+0x	01	06	07	D1	00	01	19	47
+			|		|
+			|		Ghi giá trị này (0x0001) vào thanh ghi đã chọn
+			Thanh ghi chứa giá trị "Baudrate"
+
+# Cài đặt Baudrate 2400
+|
+Lệnh gửi:
+0x	01	06	07	D1	00	00	D8	87
+			|		|
+			|		Ghi giá trị này (0x0000) vào thanh ghi đã chọn
+			Thanh ghi chứa giá trị "Baudrate"
+
+-------------------------------------------------
+
+# Đọc giá trị "Baudrate" cảm biến có địa chỉ 0x01, với Baudrate đang là 9600
+|
+Lệnh gửi:
+0x	01	03	07	D1	00	01	D5	47
+|			|		|
+|			|		Yêu cầu lấy 1 Byte trên thanh ghi
+|			Thanh ghi chứa giá trị "Baudrate"
+|
+Phản hồi (từ cảm biến địa chỉ 0x01):
+0x	01	03	02	00	02	79	84
+			|	|
+			|	Giá trị "Baudrate"
+			2 Byte trả về
+
+===================================================================================================

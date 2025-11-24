@@ -1,0 +1,16 @@
+SHTC3 KEYWORD1
+
+begin KEYWORD2
+setTimeout  KEYWORD2
+
+dataSHTC3 KEYWORD3
+getData KEYWORD2
+
+readTemperature KEYWORD2
+readHumidity  KEYWORD2
+
+readBaudrate  KEYWORD2
+readAddress KEYWORD2
+
+setBaudrate KEYWORD2
+setAddress  KEYWORD2
