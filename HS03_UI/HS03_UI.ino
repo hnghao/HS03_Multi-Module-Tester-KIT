@@ -4,7 +4,7 @@
 #include <string.h>
 #include <Adafruit_NeoPixel.h>   // NeoPixel WS2812
 #include <LedControl.h>          // MAX7219
-//Chương trình test đầu tiên
+
 // ======================
 // Cấu hình chân
 // ======================
@@ -65,7 +65,8 @@ enum AppState {
   STATE_NEOPIXEL,
   STATE_SIMPLE_SCREEN,
   STATE_MATRIX_8X32,     // Matrix 8x32
-  STATE_RS485_SHTC3      // Sensor RS485: SHTC3
+  STATE_RS485_SHTC3,     // Sensor RS485: SHTC3
+  STATE_TM1637           // 4x7 Segment TM1637
 };
 
 // ======================
@@ -190,6 +191,7 @@ void drawRS485Header(uint8_t funcIndex);
 #include "NeoPixelMode.h"
 #include "MatrixLedMode.h"
 #include "RS485SHTC3Mode.h"   // mode đọc SHTC3 RS485
+#include "TM1637Mode.h"       // mode 4x7 Segment TM1637 (mới)
 
 // ======================
 // Hàm vẽ header cho Led Matrix
@@ -351,6 +353,10 @@ void loop() {
       updateRS485SHTC3Mode(now); // đọc SHTC3 RS485 & hiển thị LCD
       break;
 
+    case STATE_TM1637:
+      updateTM1637Mode(now);     // cập nhật TM1637 (12:34 + nháy colon)
+      break;
+
     default:
       break;
   }
@@ -429,6 +435,16 @@ void onEncoderTurn(int direction) {
 // Xử lý nút nhấn
 // ======================
 void onButtonClick() {
+  unsigned long now = millis();
+
+  // Đang ở TM1637 -> nhấn 1 lần để thoát về MENU
+  if (appState == STATE_TM1637) {
+    stopTM1637Mode();
+    appState = STATE_MENU;
+    printMainMenuItem();
+    return;
+  }
+
   // Đang ở Analog -> về MENU
   if (appState == STATE_ANALOG) {
     appState = STATE_MENU;
@@ -544,6 +560,26 @@ void onButtonClick() {
         case 6: // Neopixel
           startNeoPixelMode();
           break;
+
+        case 11: { // 4x7 Segment TM1637
+        // Không đổi appState sang STATE_TM1637 nữa,
+        // TM1637 sẽ tự chạy blocking bên trong startTM1637Mode()
+
+        lcd.clear();
+        lcdPrintLine(1, "TM1637: 12:34");
+        lcdPrintLine(2, "Nhan nut de thoat");
+        lcdPrintLine(3, " ");
+
+        // Chạy demo TM1637 (12:34, nháy colon, thoát khi nhấn nút)
+        startTM1637Mode();
+
+        // Sau khi thoát thì quay lại MENU như bình thường
+        appState     = STATE_MENU;
+        currentLevel = LEVEL_MAIN;
+        strncpy(headerLabel, "Menu", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printMainMenuItem();
+        } break;
 
         default:
           // Các mục khác: hiện màn hình đơn giản
