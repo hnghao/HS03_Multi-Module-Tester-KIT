@@ -192,6 +192,8 @@ void drawRS485Header(uint8_t funcIndex);
 #include "MatrixLedMode.h"
 #include "RS485SHTC3Mode.h"   // mode đọc SHTC3 RS485
 #include "TM1637Mode.h"       // mode 4x7 Segment TM1637 (mới)
+#include "Segment4x7HC595Mode.h" // mode 4x7 Segment HC595 (blocking)
+#include "Segment2x7HC595Mode.h"   // mode 2x7 Segment HC595 (blocking)
 
 // ======================
 // Hàm vẽ header cho Led Matrix
@@ -572,6 +574,44 @@ void onButtonClick() {
 
         // Chạy demo TM1637 (12:34, nháy colon, thoát khi nhấn nút)
         startTM1637Mode();
+
+        // Sau khi thoát thì quay lại MENU như bình thường
+        appState     = STATE_MENU;
+        currentLevel = LEVEL_MAIN;
+        strncpy(headerLabel, "Menu", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printMainMenuItem();
+        } break;
+
+        case 10: { // 4x7 Segment HC595
+        // Vẽ màn hình hướng dẫn
+        lcd.clear();
+        lcdPrintLine(0, "4x7 Segment HC595");
+        lcdPrintLine(1, "Hien thi 0..9");
+        lcdPrintLine(2, "DP chop sau moi so");
+        lcdPrintLine(3, "Nhan nut de thoat");
+
+        // Chạy mode 4x7 HC595 (blocking)
+        start4x7HC595Mode();
+
+        // Sau khi thoát thì quay lại MENU như bình thường
+        appState     = STATE_MENU;
+        currentLevel = LEVEL_MAIN;
+        strncpy(headerLabel, "Menu", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printMainMenuItem();
+        } break;
+
+        case 9: { // 2x7 Segment HC595
+        // Vẽ màn hình hướng dẫn
+        lcd.clear();
+        lcdPrintLine(0, "2x7 Segment HC595");
+        lcdPrintLine(1, "Hien thi 0..9");
+        lcdPrintLine(2, "DP chop sau moi so");
+        lcdPrintLine(3, "Nhan nut de thoat");
+
+        // Chạy mode 2x7 HC595 (blocking)
+        start2x7HC595Mode();
 
         // Sau khi thoát thì quay lại MENU như bình thường
         appState     = STATE_MENU;
