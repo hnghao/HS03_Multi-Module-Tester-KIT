@@ -32,6 +32,10 @@ void lcdPrintLine(uint8_t row, const char *text) {
 // I2C submenu: "I2C  a/b  xxxs"
 // Mode khác:  "<headerLabel>   xxxs"
 void updateHeaderRow() {
+  // Nếu header bị tắt (ví dụ khi vào PS2) thì không vẽ gì lên dòng 0
+  if (!headerEnabled) {
+    return;
+  }
   char line[21];
 
   if (appState == STATE_MENU) {

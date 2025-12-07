@@ -1,76 +1,67 @@
-// ESP32-S3 + JSN/HC-SR04T Mode 0 (HC-SR04 style)
-// TRIG: GPIO2, ECHO: GPIO4 (ECHO phải hạ áp xuống 3.3V trước khi vào ESP32-S3)
+/*
+  JSN-SR04T-V3.0 Ultrasonic Sensor - Mode 0 Demo
+  srt04-mode0.ino
+  Uses JSN-SR04T-V3.0 Ultrasonic Sensor
+  Displays on Serial Monitor
 
-#define TRIG_PIN  14
-#define ECHO_PIN  2
+  Mode 0 is default mode with no jumpers or resistors (emulates HC-SR04)
 
-// Hàm đo 1 lần, trả về khoảng cách (cm)
-// Nếu không bắt được echo -> trả về -1
-float readDistanceCmOnce() {
-  // Đảm bảo TRIG ở mức LOW
-  digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(2);
+  DroneBot Workshop 2021
+  https://dronebotworkshop.com
+*/
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 
-  // Xung kích: HIGH ít nhất 10 µs
-  digitalWrite(TRIG_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
+// Define connections to sensor
+#define TRIGPIN 14
+#define ECHOPIN 9
+LiquidCrystal_I2C lcd(0x27, 20, 4);
 
-  // Đo độ rộng xung ECHO (µs), timeout 30ms ~ 5m
-  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 30000UL);
-
-  if (duration == 0) {
-    // Hết thời gian mà không nhận được echo
-    return -1.0;
-  }
-
-  // Công thức chuẩn HC-SR04: distance(cm) = duration / 58.0
-  float distanceCm = duration / 58.0;
-  return distanceCm;
-}
-
-// Đọc nhiều lần để lọc nhiễu, trả về trung bình
-float readDistanceCm(uint8_t samples = 5) {
-  float sum = 0;
-  uint8_t validCount = 0;
-
-  for (uint8_t i = 0; i < samples; i++) {
-    float d = readDistanceCmOnce();
-    if (d > 0) {  // chỉ cộng các giá trị hợp lệ
-      sum += d;
-      validCount++;
-    }
-    delay(10); // nghỉ nhẹ giữa các lần đo
-  }
-
-  if (validCount == 0) {
-    return -1.0;
-  }
-
-  return sum / validCount;
-}
+// Floats to calculate distance
+float duration, distance;
 
 void setup() {
+  // Set up serial monitor
   Serial.begin(115200);
-  delay(1000);
-
-  pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT); // ECHO đã được hạ áp xuống 3.3V
-
-  Serial.println(F("ESP32-S3 + JSN/HC-SR04T Mode 0"));
-  Serial.println(F("Dang bat dau do khoang cach..."));
+  Wire.begin(6, 7);
+  lcd.init();
+  lcd.backlight();
+  // Set pinmodes for sensor connections
+  pinMode(ECHOPIN, INPUT);
+  pinMode(TRIGPIN, OUTPUT);
 }
 
 void loop() {
-  float distance = readDistanceCm(5);
 
-  if (distance < 0) {
-    Serial.println(F("Khong nhan duoc echo (Out of range hoặc wiring sai)!"));
-  } else {
-    Serial.print(F("Khoang cach: "));
-    Serial.print(distance, 1); // 1 số lẻ
-    Serial.println(F(" cm"));
-  }
+  // Set the trigger pin LOW for 2uS
+  digitalWrite(TRIGPIN, LOW);
+  delayMicroseconds(2);
 
-  delay(500); // đo mỗi 0.5 giây
+  // Set the trigger pin HIGH for 20us to send pulse
+  digitalWrite(TRIGPIN, HIGH);
+  delayMicroseconds(20);
+
+  // Return the trigger pin to LOW
+  digitalWrite(TRIGPIN, LOW);
+
+  // Measure the width of the incoming pulse
+  duration = pulseIn(ECHOPIN, HIGH);
+
+  // Determine distance from duration
+  // Use 343 metres per second as speed of sound
+  // Divide by 1000 as we want millimeters
+
+  distance = (duration / 2) * 0.343;
+
+  // Print result to serial monitor
+  // Serial.print("distance: ");
+  // Serial.print(distance);
+  // Serial.println(" mm");
+  lcd.setCursor(0, 0);
+  lcd.print("Gia tri khoang cach");
+  lcd.setCursor(0, 1);
+  lcd.print(distance,1);
+  lcd.print("mm");
+  // Delay before repeating measurement
+  delay(100);
 }

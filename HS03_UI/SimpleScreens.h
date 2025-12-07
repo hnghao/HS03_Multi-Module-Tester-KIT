@@ -17,18 +17,18 @@ void showMainFunctionScreen(int index) {
   lcdPrintLine(3, "Btn: Back       ");
 }
 
-// Màn hình Test VL53L1X (stub)
-void showVL53L1XTestScreen() {
-  appState = STATE_SIMPLE_SCREEN;
-  lcd.clear();
+// // Màn hình Test VL53L1X (stub)
+// void showVL53L1XTestScreen() {
+//   appState = STATE_SIMPLE_SCREEN;
+//   lcd.clear();
 
-  strncpy(headerLabel, "VL53L1X Test", sizeof(headerLabel));
-  headerLabel[sizeof(headerLabel) - 1] = '\0';
-  updateHeaderRow();
+//   strncpy(headerLabel, "VL53L1X Test", sizeof(headerLabel));
+//   headerLabel[sizeof(headerLabel) - 1] = '\0';
+//   updateHeaderRow();
 
-  lcdPrintLine(1, "I2C VL53L1X     ");
-  lcdPrintLine(2, "Not implemented ");
-  lcdPrintLine(3, "Btn: Back       ");
-}
+//   lcdPrintLine(1, "I2C VL53L1X     ");
+//   lcdPrintLine(2, "Not implemented ");
+//   lcdPrintLine(3, "Btn: Back       ");
+// }
 
 #endif

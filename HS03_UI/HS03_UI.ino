@@ -28,7 +28,7 @@
 #define LED_GREEN_PIN    4
 
 #define NEOPIXEL_PIN       5      // WS2812 tại GPIO5
-#define NEOPIXEL_LED_COUNT 150    // Tối đa 150 led
+#define NEOPIXEL_LED_COUNT 144    // Tối đa 150 led
 
 // LCD
 #define LCD_I2C_ADDR     0x27
@@ -66,7 +66,9 @@ enum AppState {
   STATE_SIMPLE_SCREEN,
   STATE_MATRIX_8X32,     // Matrix 8x32
   STATE_RS485_SHTC3,     // Sensor RS485: SHTC3
-  STATE_TM1637           // 4x7 Segment TM1637
+  STATE_SEGMENT_4X7_HC595,
+  STATE_TM1637,           // 4x7 Segment TM1637
+  STATE_MAX6675
 };
 
 // ======================
@@ -97,9 +99,10 @@ const int MAIN_MENU_COUNT = sizeof(mainMenuItems) / sizeof(mainMenuItems[0]);
 // Sub-menu I2C
 const char* const i2cSubMenuItems[] = {
   "Scan",
-  "Test Data - VL53L1X",
+  "Test PCA9685",
   "<-- Back"
 };
+
 const int I2C_MENU_COUNT = sizeof(i2cSubMenuItems) / sizeof(i2cSubMenuItems[0]);
 
 // Sub-menu Led Matrix (chỉ còn Matrix 8x32 + Back)
@@ -149,8 +152,11 @@ const unsigned long ENCODER_DEBOUNCE  = 3;   // ms
 
 char headerLabel[16] = "";
 
+// Cờ bật/tắt vẽ header dòng 0
+bool headerEnabled = true;
+
 // Countdown 120s + buzzer 10s
-const uint16_t       COUNTDOWN_SECONDS     = 120;
+const uint16_t       COUNTDOWN_SECONDS     = 180;
 const unsigned long  BUZZER_DURATION       = 10000UL;
 unsigned long        countdownStartMillis  = 0;
 int                  countdownRemaining    = COUNTDOWN_SECONDS;
@@ -184,6 +190,7 @@ void drawRS485Header(uint8_t funcIndex);
 #include "Display.h"
 #include "CountdownBuzzer.h"
 #include "I2CScanMode.h"
+#include "PCA9685TestMode.h"
 #include "AnalogMode.h"
 #include "DFRobotAnalog.h"
 #include "SimpleScreens.h"
@@ -194,6 +201,11 @@ void drawRS485Header(uint8_t funcIndex);
 #include "TM1637Mode.h"       // mode 4x7 Segment TM1637 (mới)
 #include "Segment4x7HC595Mode.h" // mode 4x7 Segment HC595 (blocking)
 #include "Segment2x7HC595Mode.h"   // mode 2x7 Segment HC595 (blocking)
+#include "UltrasonicJSNMode.h"   // <--- THÊM DÒNG NÀY
+#include "PS2Mode.h"
+#include "MAX6675Mode.h"
+// Định nghĩa object MAX6675 dùng chung cho mode
+MAX6675 max6675(MAX6675_CLK_PIN, MAX6675_CS_PIN, MAX6675_DO_PIN);
 
 // ======================
 // Hàm vẽ header cho Led Matrix
@@ -271,11 +283,11 @@ void setup() {
 
   // Màn hình chào 1.5s
   lcd.clear();
-  lcdPrintLine(0, "HShop Multi Tool Tester");
-  lcdPrintLine(1, "Version: 1.00");
-  lcdPrintLine(2, "Xin kinh chao quy khach !");
-  lcdPrintLine(3, "Xin kinh chao quy khach !");
-  delay(1500);
+  lcdPrintLine(0, "********************");
+  lcdPrintLine(1, "*  HSHOP TEST KIT  *");
+  lcdPrintLine(2, "*XIN CHAO QUY KHACH*");
+  lcdPrintLine(3, "********************");
+  delay(500);
 
   // Cấu hình IO
   pinMode(ENCODER_CLK_PIN, INPUT_PULLUP);
@@ -354,9 +366,16 @@ void loop() {
     case STATE_RS485_SHTC3:
       updateRS485SHTC3Mode(now); // đọc SHTC3 RS485 & hiển thị LCD
       break;
+    case STATE_SEGMENT_4X7_HC595:
+      update4x7HC595Mode(now);   // hàm này đã alias sang header mới
+      break;
 
     case STATE_TM1637:
       updateTM1637Mode(now);     // cập nhật TM1637 (12:34 + nháy colon)
+      break;
+
+    case STATE_MAX6675:
+      updateMAX6675Mode(now);
       break;
 
     default:
@@ -519,6 +538,27 @@ void onButtonClick() {
     return;
   }
 
+  // Đang ở 4x7 Segment HC595
+  //  - Lần nhấn đầu (ở trang chọn 4/8) -> handle4x7HC595ButtonClick() trả true -> CHỌN mode, KHÔNG thoát
+  //  - Lần nhấn sau (khi đang RUN)     -> handle... trả false -> thoát về MENU như cũ
+  if (appState == STATE_SEGMENT_4X7_HC595) {
+    if (!handle4x7HC595ButtonClick()) {
+      // Không còn xử lý nội bộ -> thoát mode
+      stop4x7HC595Mode();
+      appState = STATE_MENU;
+      printMainMenuItem();
+    }
+    return;
+  }
+
+  // Đang ở MAX6675 -> nhấn nút để quay về MENU
+  if (appState == STATE_MAX6675) {
+    stopMAX6675Mode();
+    appState = STATE_MENU;
+    printMainMenuItem();
+    return;
+  }
+
   // Đang ở MENU: xử lý chọn chức năng
   if (appState == STATE_MENU) {
     if (currentLevel == LEVEL_MAIN) {
@@ -559,9 +599,24 @@ void onButtonClick() {
           printMatrixSubMenuItem();
         } break;
 
-        case 6: // Neopixel
-          startNeoPixelMode();
-          break;
+        case 6: { // Neopixel
+        // Hiển thị trang thông tin NeoPixel trên LCD
+        lcd.clear();
+        lcdPrintLine(0, "Neopixel");
+        lcdPrintLine(1, "Chu ky RGB+Trang");
+        lcdPrintLine(2, "Nhan nut de dung");
+        lcdPrintLine(3, " ");
+
+        // Chạy mode NeoPixel (blocking, tuong tu TM1637 / 4x7 HC595)
+        startNeoPixelMode();
+
+        // Sau khi thoat -> quay ve MENU
+        appState     = STATE_MENU;
+        currentLevel = LEVEL_MAIN;
+        strncpy(headerLabel, "Menu", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printMainMenuItem();
+        } break;
 
         case 11: { // 4x7 Segment TM1637
         // Không đổi appState sang STATE_TM1637 nữa,
@@ -584,23 +639,21 @@ void onButtonClick() {
         } break;
 
         case 10: { // 4x7 Segment HC595
-        // Vẽ màn hình hướng dẫn
-        lcd.clear();
-        lcdPrintLine(0, "4x7 Segment HC595");
-        lcdPrintLine(1, "Hien thi 0..9");
-        lcdPrintLine(2, "DP chop sau moi so");
-        lcdPrintLine(3, "Nhan nut de thoat");
+        appState = STATE_SEGMENT_4X7_HC595;
 
-        // Chạy mode 4x7 HC595 (blocking)
-        start4x7HC595Mode();
-
-        // Sau khi thoát thì quay lại MENU như bình thường
-        appState     = STATE_MENU;
-        currentLevel = LEVEL_MAIN;
-        strncpy(headerLabel, "Menu", sizeof(headerLabel));
+        // Header dòng 0 vẫn do updateHeaderRow() vẽ (Menu + index + countdown)
+        strncpy(headerLabel, "4x7 HC595", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
-        printMainMenuItem();
-        } break;
+        updateHeaderRow();
+
+        // Hướng dẫn trên LCD:
+        lcdPrintLine(1, "Nhan nut de thoat");
+        lcdPrintLine(2, "Mode: 4/8 LED 7 doan");
+        lcdPrintLine(3, "Xoay encoder doi");
+
+        // Khởi động mode 4x7 (khởi tạo chân + tắt an toàn)
+        start4x7HC595Mode();
+      } break;
 
         case 9: { // 2x7 Segment HC595
         // Vẽ màn hình hướng dẫn
@@ -621,19 +674,66 @@ void onButtonClick() {
         printMainMenuItem();
         } break;
 
+        case 8: { // Ultrasonic JSN
+        // Hiển thị trang thông tin trên LCD
+        lcd.clear();
+        lcdPrintLine(0, "Ultrasonic JSN");
+        lcdPrintLine(1, "JSN-SR04T Mode 0");
+        lcdPrintLine(2, "Nhan nut de thoat");
+        lcdPrintLine(3, " ");
+
+        // Chạy mode đo khoảng cách (blocking giống TM1637 / 4x7 / 2x7)
+        startUltrasonicJSNMode();
+
+        // Sau khi thoát thì quay lại MENU chính
+        appState     = STATE_MENU;
+        currentLevel = LEVEL_MAIN;
+        strncpy(headerLabel, "Menu", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printMainMenuItem();
+        } break;
+
+        case 12: { // PS2
+        // Chạy mode PS2 (blocking), hiển thị LCD đúng như chương trình gốc
+        startPS2Mode();
+
+        // Sau khi thoát PS2 -> quay lại MENU chính
+        appState     = STATE_MENU;
+        currentLevel = LEVEL_MAIN;
+        strncpy(headerLabel, "Menu", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printMainMenuItem();
+        } break;
+
+        case 7: { // Max6675  (nếu index khác thì sửa số 7 cho đúng)
+          appState = STATE_MAX6675;
+          strncpy(headerLabel, "Max6675", sizeof(headerLabel));
+          headerLabel[sizeof(headerLabel) - 1] = '\0';
+          updateHeaderRow();
+
+          // Dòng 1–3 do mode tự xử lý
+          startMAX6675Mode();
+        } break;
+
         default:
           // Các mục khác: hiện màn hình đơn giản
           showMainFunctionScreen(currentMainIndex);
           break;
-      }
+        }
     } else if (currentLevel == LEVEL_I2C_SUB) {
       switch (currentI2CIndex) {
         case 0: // I2C Scan
           startI2CScanMode();
           break;
-        case 1: // VL53L1X Test (stub)
-          showVL53L1XTestScreen();
-          break;
+        case 1: { // Test PCA9685
+        // Chạy chương trình test PCA9685 (blocking, tự xử lý countdown + buzzer)
+        startPCA9685TestMode();
+
+        // Sau khi thoát test, quay lại submenu I2C như cũ
+        strncpy(headerLabel, "I2C Menu", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printI2CSubMenuItem();
+        } break;
         case 2: // Back
           currentLevel = LEVEL_MAIN;
           strncpy(headerLabel, "Menu", sizeof(headerLabel));

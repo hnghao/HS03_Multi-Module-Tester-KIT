@@ -1,90 +1,203 @@
-#ifndef NEOPIXEL_MODE_H
-#define NEOPIXEL_MODE_H
+#ifndef NEO_PIXEL_MODE_H
+#define NEO_PIXEL_MODE_H
 
+#include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
+#include <LiquidCrystal_I2C.h>
 
-// Các biến/hàm dùng chung khai báo extern để dùng sang từ .ino
-extern LiquidCrystal_I2C lcd;
-extern AppState appState;
-extern char headerLabel[16];
-
+// neoStrip & lcd được khai báo trong HS03_UI.ino
 extern Adafruit_NeoPixel neoStrip;
-extern unsigned long lastNeoUpdate;
-extern const unsigned long NEOPIXEL_UPDATE_INTERVAL;
+extern LiquidCrystal_I2C lcd;
 
-extern void lcdPrintLine(uint8_t row, const char *text);
-extern void updateHeaderRow();
+// Hàm countdown + buzzer + in LCD
+extern void updateCountdown(unsigned long now);
+extern void handleBuzzer(unsigned long now);
+extern void lcdPrintLine(uint8_t row, const char* text);
 
-// Vị trí led hiện tại trong dải NeoPixel
-static uint16_t neoCurrentPixel = 0;
+// Các biến encoder trong HS03_UI.ino (để đồng bộ lại sau khi thoát mode)
+extern int  lastClkState;
+extern unsigned long lastEncoderTime;
 
-// Pha màu hiện tại: 0 = Xanh lá, 1 = Đỏ, 2 = Xanh dương
-static uint8_t neoColorPhase = 0;
+// ENCODER_* đã #define trong HS03_UI.ino
+// #define ENCODER_CLK_PIN 17
+// #define ENCODER_DT_PIN  16
+// #define ENCODER_SW_PIN  15
 
-// Hàm trả về màu theo pha
-static uint32_t getPhaseColor() {
-  switch (neoColorPhase) {
-    case 0: // xanh lá
-      return neoStrip.Color(0, 150, 0);
-    case 1: // đỏ
-      return neoStrip.Color(150, 0, 0);
-    case 2: // xanh dương
-    default:
-      return neoStrip.Color(0, 0, 150);
+// Cờ báo thoát hiệu ứng NeoPixel
+static bool neoAbort = false;
+
+// Độ sáng hiện tại (0..255), mặc định giống code mẫu ~80
+static uint8_t neoBrightness = 80;
+
+// Trạng thái riêng cho encoder trong mode NeoPixel
+static int            neoLastClkState    = HIGH;
+static unsigned long  neoLastEncMillis   = 0;
+static const unsigned long NEO_ENC_DEBOUNCE = 3;   // ms
+
+// ====== HÀM VẼ THANH BRIGHTNESS LÊN LCD (dòng 3) ======
+inline void neoUpdateBrightnessBar() {
+  // Dạng: "Brt [########      ]" (20 ký tự)
+  char line[21];
+  line[0] = 'B';
+  line[1] = 'r';
+  line[2] = 't';
+  line[3] = ' ';
+  line[4] = '[';
+
+  // Thanh bar dài 14 ô (cột 5..18)
+  uint8_t segments = (uint32_t)neoBrightness * 14 / 255;  // 0..14
+  for (uint8_t i = 0; i < 14; i++) {
+    line[5 + i] = (i < segments) ? '#' : ' ';
+  }
+
+  line[19] = ']';
+  line[20] = '\0';
+
+  lcdPrintLine(3, line);
+}
+
+// Áp dụng brightness hiện tại cho strip
+inline void neoApplyBrightness() {
+  neoStrip.setBrightness(neoBrightness);
+  neoStrip.show();
+  neoUpdateBrightnessBar();
+}
+
+// ====== ĐỌC XOAY ENCODER ĐỂ CHỈNH ĐỘ SÁNG ======
+inline void neoUpdateEncoderBrightness() {
+  int clk = digitalRead(ENCODER_CLK_PIN);
+  if (clk != neoLastClkState) {
+    if (clk == LOW && (millis() - neoLastEncMillis) > NEO_ENC_DEBOUNCE) {
+      int dt  = digitalRead(ENCODER_DT_PIN);
+      int dir = (dt == HIGH) ? +1 : -1;   // giống hướng trong HS03_UI.ino
+
+      // Mỗi nấc thay đổi 4 đơn vị brightness
+      int val = (int)neoBrightness + dir * 4;
+      if (val < 1)   val = 1;
+      if (val > 255) val = 255;
+
+      if (val != neoBrightness) {
+        neoBrightness = (uint8_t)val;
+        neoApplyBrightness();     // cập nhật brightness + thanh bar
+      }
+
+      neoLastEncMillis = millis();
+    }
+    neoLastClkState = clk;
   }
 }
 
-// Bắt đầu chế độ Neopixel
-void startNeoPixelMode() {
-  appState = STATE_NEOPIXEL;
-  lcd.clear();
-
-  strncpy(headerLabel, "Neopixel", sizeof(headerLabel));
-  headerLabel[sizeof(headerLabel) - 1] = '\0';
-  updateHeaderRow();
-
-  lcdPrintLine(1, "WS2812 @GPIO5    ");
-  lcdPrintLine(2, "Max 150 LEDs     ");
-  lcdPrintLine(3, "Btn: Back        ");
-
-  neoStrip.clear();
-  neoStrip.show();
-
-  neoCurrentPixel = 0;
-  neoColorPhase   = 0;
-  lastNeoUpdate   = 0;
-}
-
-// Cập nhật hiệu ứng: chạy từng led một, đổi qua 3 màu cơ bản
-void updateNeoPixelMode(unsigned long now) {
-  if (now - lastNeoUpdate < NEOPIXEL_UPDATE_INTERVAL) return;
-  lastNeoUpdate = now;
-
-  uint16_t count = neoStrip.numPixels();
-  if (count == 0) return;
-  if (neoCurrentPixel >= count) neoCurrentPixel = 0;
-
-  // Tắt hết led trước
-  neoStrip.clear();
-
-  // Chọn màu theo pha (xanh lá, đỏ, xanh dương)
-  uint32_t color = getPhaseColor();
-  neoStrip.setPixelColor(neoCurrentPixel, color);
-  neoStrip.show();
-
-  // Sang pixel tiếp theo
-  neoCurrentPixel++;
-  if (neoCurrentPixel >= count) {
-    neoCurrentPixel = 0;
-    // Khi chạy hết dải -> đổi sang màu tiếp theo
-    neoColorPhase = (neoColorPhase + 1) % 3;
+// ====== HÀM HIỆN MỘT MÀU LÊN TOÀN BỘ DẢI LED ======
+inline void neoShowColor(uint32_t color) {
+  uint16_t n = neoStrip.numPixels();
+  for (uint16_t i = 0; i < n; i++) {
+    neoStrip.setPixelColor(i, color);
   }
+  neoStrip.show();
 }
 
-// Thoát chế độ Neopixel: tắt hết led
-void stopNeoPixelMode() {
+// Delay có kèm countdown/buzzer + encoder brightness + nút thoát
+inline bool neoDelayWithServices(unsigned long totalMs) {
+  unsigned long start = millis();
+  while (millis() - start < totalMs) {
+    unsigned long now = millis();
+    updateCountdown(now);
+    handleBuzzer(now);
+
+    // Xoay encoder để chỉnh độ sáng
+    neoUpdateEncoderBrightness();
+
+    // Nhấn nút encoder để thoát
+    if (digitalRead(ENCODER_SW_PIN) == LOW) {
+      delay(30); // debounce
+      if (digitalRead(ENCODER_SW_PIN) == LOW) {
+        neoAbort = true;
+        return true; // thoát mode
+      }
+    }
+
+    delay(5); // tránh chiếm CPU 100%
+  }
+  return false;
+}
+
+// ============================
+// API dùng trong HS03_UI.ino
+// ============================
+
+// Được gọi khi chọn menu "Neopixel"
+inline void startNeoPixelMode() {
+  neoAbort = false;
+
+  // Chuẩn bị strip theo code mẫu mới
+  neoStrip.clear();
+  neoStrip.show();
+  neoStrip.setBrightness(neoBrightness);
+
+  // Hiển thị thanh brightness ban đầu
+  neoUpdateBrightnessBar();
+
+  // Chờ nhả nút (vì vừa nhấn để chọn NeoPixel)
+  while (digitalRead(ENCODER_SW_PIN) == LOW) {
+    unsigned long now = millis();
+    updateCountdown(now);
+    handleBuzzer(now);
+    delay(10);
+  }
+
+  // Đồng bộ encoder state (tránh giật menu sau khi thoát)
+  neoLastClkState   = digitalRead(ENCODER_CLK_PIN);
+  neoLastEncMillis  = millis();
+  lastClkState      = neoLastClkState;
+  lastEncoderTime   = neoLastEncMillis;
+
+  // Vòng lặp chính: ĐỎ -> XANH LÁ -> XANH DƯƠNG -> TRẮNG
+  while (!neoAbort) {
+    // Màu ĐỎ
+    neoShowColor(neoStrip.Color(255, 0, 0));
+    if (neoDelayWithServices(1000)) break;
+
+    // Màu XANH LÁ
+    neoShowColor(neoStrip.Color(0, 255, 0));
+    if (neoDelayWithServices(1000)) break;
+
+    // Màu XANH DƯƠNG
+    neoShowColor(neoStrip.Color(0, 0, 255));
+    if (neoDelayWithServices(1000)) break;
+
+    // Màu TRẮNG
+    neoShowColor(neoStrip.Color(255, 255, 255));
+    if (neoDelayWithServices(1000)) break;
+  }
+
+  // Tắt led khi thoát
+  neoStrip.clear();
+  neoStrip.show();
+
+  // Chờ người dùng nhả nút nếu còn giữ
+  while (digitalRead(ENCODER_SW_PIN) == LOW) {
+    unsigned long now = millis();
+    updateCountdown(now);
+    handleBuzzer(now);
+    delay(10);
+  }
+
+  // Đồng bộ lại encoder cho logic menu chính
+  lastClkState    = digitalRead(ENCODER_CLK_PIN);
+  lastEncoderTime = millis();
+}
+
+// Hàm này giữ lại cho hợp lệ với switch(appState),
+// nhưng hiện tại không dùng (mode chạy blocking trong startNeoPixelMode)
+inline void updateNeoPixelMode(unsigned long now) {
+  (void)now;
+}
+
+// Được gọi nếu code cũ còn nhảy vào STATE_NEOPIXEL và nhấn nút thoát
+inline void stopNeoPixelMode() {
+  neoAbort = true;
   neoStrip.clear();
   neoStrip.show();
 }
 
-#endif
+#endif // NEO_PIXEL_MODE_H
