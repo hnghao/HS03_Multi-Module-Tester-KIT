@@ -4,122 +4,141 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
-#include <LiquidCrystal_I2C.h>
 
-// I2C bus 1 (SDA=1, SCL=2) được khai báo trong HS03_UI.ino
+// Bus I2C dùng chung cho I2C Scan + ADS1115 (khai báo trong HS03_UI.ino)
 extern TwoWire I2CScanBus;
 
-// LCD2004 dùng chung trong project
+// LCD & hàm in dòng đã có sẵn trong project
+class LiquidCrystal_I2C;
 extern LiquidCrystal_I2C lcd;
+void lcdPrintLine(uint8_t row, const char *text);
 
-// Countdown + buzzer
-extern void updateCountdown(unsigned long now);
-extern void handleBuzzer(unsigned long now);
+// Hàm thoát về menu I2C (định nghĩa trong HS03_UI.ino)
+void exitPCA9685ToI2CMenu();
 
-// Dùng macro chân encoder từ HS03_UI.ino
-// #define ENCODER_SW_PIN 15
-
-// ================== CẤU HÌNH PCA9685 ==================
-
-// ĐÚNG THEO SIGNATURE: Adafruit_PWMServoDriver(uint8_t addr, TwoWire &i2c)
-// Không dùng &I2CScanBus nữa, mà truyền 0x40 trước, rồi I2CScanBus
+// Đối tượng PCA9685 dùng bus I2CScanBus, địa chỉ mặc định 0x40
 static Adafruit_PWMServoDriver pca9685(0x40, I2CScanBus);
 
-// Xung min/max cho servo (giống code mẫu)
-#define PCA_SERVOMIN  150   // ~0.5 ms
-#define PCA_SERVOMAX  600   // ~2.5 ms
+// Cấu hình servo
+static const uint16_t PCA_FREQUENCY_HZ = 50;   // 50 Hz cho servo
+static const uint16_t SERVO_MIN_US     = 500;  // ~0.5ms  ~ 0°
+static const uint16_t SERVO_MAX_US     = 2500; // ~2.5ms ~180°
 
-// Số servo (kênh 0..15)
-static const uint8_t PCA_NUM_SERVOS = 16;
+static int16_t pcaCurrentAngle = 90;   // góc hiện tại (0..180)
+static bool    pcaInitialized  = false;
 
-// Dãy góc: 0 -> 90 -> 180 -> 90 -> 0
-static const int PCA_POSITIONS[] = {0, 90, 180, 90, 0};
-static const uint8_t PCA_NUM_POSITIONS = sizeof(PCA_POSITIONS) / sizeof(PCA_POSITIONS[0]);
+// Double-click detection
+static bool           pcaClickPending    = false;
+static unsigned long  pcaLastClickTime   = 0;
+static const unsigned long PCA_DOUBLE_MS = 400;  // ms
 
-// Thời gian dừng tại mỗi góc (ms)
-static const unsigned long PCA_MOVE_DELAY = 1000UL;
-
-// Đổi góc sang xung (0–4095)
-inline int pcaAngleToPulse(int angle) {
-  angle = constrain(angle, 0, 180);
-  return map(angle, 0, 180, PCA_SERVOMIN, PCA_SERVOMAX);
+// Đổi micro-giây sang tick 0..4095 của PCA9685
+static uint16_t pcaUsToTicks(uint16_t us) {
+  const uint32_t period_us = 1000000UL / PCA_FREQUENCY_HZ; // ví dụ 20000µs
+  uint32_t ticks = (uint32_t)us * 4096UL / period_us;
+  if (ticks > 4095) ticks = 4095;
+  return (uint16_t)ticks;
 }
 
-// Set TẤT CẢ servo về cùng một góc
-inline void pcaSetAllServosToAngle(int angle) {
-  int pulselen = pcaAngleToPulse(angle);
-  for (uint8_t ch = 0; ch < PCA_NUM_SERVOS; ch++) {
-    pca9685.setPWM(ch, 0, pulselen);  // setPWM(channel, on, off)
+// Ghi 1 kênh servo
+static void pcaWriteServo(uint8_t channel, int angle) {
+  if (angle < 0)   angle = 0;
+  if (angle > 180) angle = 180;
+
+  uint16_t pulse_us = map(angle, 0, 180, SERVO_MIN_US, SERVO_MAX_US);
+  uint16_t ticks    = pcaUsToTicks(pulse_us);
+  pca9685.setPWM(channel, 0, ticks);
+}
+
+// Ghi tất cả 16 servo cùng 1 góc
+static void pcaWriteAllServos(int angle) {
+  if (angle < 0)   angle = 0;
+  if (angle > 180) angle = 180;
+
+  for (uint8_t ch = 0; ch < 16; ++ch) {
+    pcaWriteServo(ch, angle);
   }
-  Serial.print(F("Set all servos to angle: "));
-  Serial.println(angle);
 }
 
-// ================== MODE TEST PCA9685 ==================
-//
-// Khi chọn "Test PCA9685":
-//  - LCD hiển thị thông tin test + hướng dẫn
-//  - PCA9685 quay tất cả servo qua dãy góc 0→90→180→90→0
-//  - Có countdown + buzzer
-//  - Nhấn nút encoder để thoát, quay lại menu I2C
-//
+// Khởi động mode Test PCA9685
 inline void startPCA9685TestMode() {
-  // Khởi tạo PCA9685 trên I2CScanBus (SDA=1, SCL=2)
-  pca9685.begin();
-  pca9685.setOscillatorFrequency(27000000); // 27 MHz
-  pca9685.setPWMFreq(50);                  // 50 Hz cho servo
-  delay(10);
-
-  // Màn hình LCD
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Test PCA9685 Servo");
-  lcd.setCursor(0, 1);
-  lcd.print("0-90-180-90-0 deg ");
-  lcd.setCursor(0, 2);
-  lcd.print("Nhan nut de thoat");
-
-  // Đưa tất cả servo về 0 độ lúc bắt đầu
-  pcaSetAllServosToAngle(0);
-  delay(500);
-
-  bool exitRequested = false;
-
-  while (!exitRequested) {
-    for (uint8_t i = 0; i < PCA_NUM_POSITIONS; i++) {
-      pcaSetAllServosToAngle(PCA_POSITIONS[i]);
-
-      unsigned long start = millis();
-      while (millis() - start < PCA_MOVE_DELAY) {
-        unsigned long now = millis();
-        updateCountdown(now);
-        handleBuzzer(now);
-
-        // Nhấn nút encoder để thoát
-        if (digitalRead(ENCODER_SW_PIN) == LOW) {
-          delay(30); // debounce
-          if (digitalRead(ENCODER_SW_PIN) == LOW) {
-            exitRequested = true;
-            break;
-          }
-        }
-
-        delay(5); // tránh chiếm CPU 100%
-      }
-
-      if (exitRequested) break;
-    }
+  if (!pcaInitialized) {
+    pca9685.begin();                     // dùng I2CScanBus
+    pca9685.setPWMFreq(PCA_FREQUENCY_HZ);
+    delay(10);
+    pcaInitialized = true;
   }
 
-  // Về lại góc 0 độ khi thoát
-  pcaSetAllServosToAngle(0);
+  // Đưa tất cả servo về 90°
+  pcaCurrentAngle = 90;
+  pcaWriteAllServos(pcaCurrentAngle);
 
-  // Chờ nhả nút hoàn toàn (tránh dính nhấn khi quay về menu)
-  while (digitalRead(ENCODER_SW_PIN) == LOW) {
-    unsigned long now = millis();
-    updateCountdown(now);
-    handleBuzzer(now);
-    delay(10);
+  // Reset trạng thái click
+  pcaClickPending  = false;
+  pcaLastClickTime = 0;
+
+  // Hiển thị hướng dẫn
+  lcdPrintLine(1, "PCA9685: 16 servo");
+  lcdPrintLine(2, "Goc servo: 090 deg");
+  lcdPrintLine(3, "1Click:I2C  2Click:90");
+}
+
+// Được gọi trong loop() khi appState == STATE_PCA9685_TEST
+inline void updatePCA9685TestMode(unsigned long now) {
+  // Nếu có 1 lần nhấn mà quá thời gian double-click
+  // => xem như single-click => thoát về menu I2C
+  if (pcaClickPending && (now - pcaLastClickTime > PCA_DOUBLE_MS)) {
+    pcaClickPending = false;
+    exitPCA9685ToI2CMenu();   // về menu I2C
+    return;
+  }
+}
+
+// Khi thoát mode -> tắt toàn bộ xung servo
+inline void stopPCA9685TestMode() {
+  for (uint8_t ch = 0; ch < 16; ++ch) {
+    pca9685.setPWM(ch, 0, 0);   // off channel
+  }
+}
+
+// Gọi từ onEncoderTurn() khi appState == STATE_PCA9685_TEST
+inline void pca9685OnEncoderTurn(int direction) {
+  // Mỗi nấc encoder đổi 2° => đi nhanh hơn nhưng vẫn khá mượt
+  int newAngle = pcaCurrentAngle + direction * 2;
+
+  if (newAngle < 0)   newAngle = 0;
+  if (newAngle > 180) newAngle = 180;
+  if (newAngle == pcaCurrentAngle) return;
+
+  pcaCurrentAngle = newAngle;
+  pcaWriteAllServos(pcaCurrentAngle);
+
+  char buf[21];
+  snprintf(buf, sizeof(buf), "Goc servo: %3d deg", pcaCurrentAngle);
+  lcdPrintLine(2, buf);
+}
+
+// Gọi từ onButtonClick() khi appState == STATE_PCA9685_TEST
+// - Click thứ 1: set pending, chờ coi có click thứ 2 không
+// - Click thứ 2 trong khoảng PCA_DOUBLE_MS => double-click -> reset 90°
+// - Nếu không có click thứ 2 => trong updatePCA9685TestMode() sẽ xử lý single-click -> thoát I2C
+inline void pcaOnRawButtonClick() {
+  unsigned long now = millis();
+
+  if (pcaClickPending && (now - pcaLastClickTime <= PCA_DOUBLE_MS)) {
+    // Double-click: reset về 90°
+    pcaClickPending = false;
+
+    pcaCurrentAngle = 90;
+    pcaWriteAllServos(pcaCurrentAngle);
+
+    char buf[21];
+    snprintf(buf, sizeof(buf), "Goc servo: %3d deg", pcaCurrentAngle);
+    lcdPrintLine(2, buf);
+  } else {
+    // Lần click đầu tiên -> chờ thêm trong PCA_DOUBLE_MS
+    pcaClickPending  = true;
+    pcaLastClickTime = now;
   }
 }
 

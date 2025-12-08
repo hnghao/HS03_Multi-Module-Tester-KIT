@@ -16,7 +16,7 @@ extern void handleBuzzer(unsigned long now);
 
 // ================== CẤU HÌNH CHÂN JSN-SR04T ==================
 #define JSN_TRIG_PIN 14   // TRIG của JSN-SR04T nối GPIO14
-#define JSN_ECHO_PIN 9    // ECHO nối GPIO9 (qua mạch giảm áp 5V -> 3.3V)
+#define JSN_ECHO_PIN 1    // ECHO nối GPIO9 (qua mạch giảm áp 5V -> 3.3V)
 
 // ================== MODE ULTRASONIC JSN ==================
 //

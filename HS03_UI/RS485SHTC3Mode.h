@@ -9,8 +9,8 @@
 extern LiquidCrystal_I2C lcd;
 
 // Chân UART nối với RS485-SHTC3 (giống code mẫu)
-#define RS485_SHTC3_RX_PIN  2   // ESP32-S3 GPIO2  - RO -> RX
-#define RS485_SHTC3_TX_PIN  1   // ESP32-S3 GPIO1  - DI -> TX
+#define RS485_SHTC3_RX_PIN  9   // ESP32-S3 GPIO2  - RO -> RX
+#define RS485_SHTC3_TX_PIN  3   // ESP32-S3 GPIO1  - DI -> TX
 
 // Tạo đối tượng SHTC3 (giống demo của bạn)
 static SHTC3 shtc3Sensor(RS485_SHTC3_RX_PIN, RS485_SHTC3_TX_PIN, BAUD_4800, 0x01);

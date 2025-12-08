@@ -101,24 +101,43 @@ void printMainMenuItem() {
   }
 }
 
-// --------------------
-// I2C SUBMENU (LEVEL_I2C_SUB)
-// --------------------
-// Dòng 0: header (I2C a/b + countdown)
-// Dòng 1–3: mục với con trỏ '>'
 void printI2CSubMenuItem() {
-  updateHeaderRow();  // vẽ dòng 0
+  lcd.clear();
+  updateHeaderRow();   // Header: "I2C Menu ..."
 
-  for (int i = 0; i < 3; i++) {
-    if (i < I2C_MENU_COUNT) {
-      char line[21];
-      char arrow = (i == currentI2CIndex) ? '>' : ' ';
-      snprintf(line, sizeof(line), "%c%2d.%s", arrow, i + 1, i2cSubMenuItems[i]);
-      lcdPrintLine(1 + i, line);
+  // Cửa sổ 3 dòng menu trên LCD (dòng 1,2,3)
+  // Logic cuộn:
+  //  - Nếu con trỏ ở 0 hoặc 1 -> hiển thị (0,1,2)
+  //  - Nếu con trỏ ở 2 hoặc 3 -> hiển thị (1,2,3)
+  int start = 0;
+  if (currentI2CIndex <= 1) {
+    start = 0;
+  } else {
+    start = I2C_MENU_COUNT - 3; // với 4 mục -> 1
+    if (start < 0) start = 0;   // phòng khi sau này ít hơn 3 mục
+  }
+
+  // Vẽ 3 dòng menu tại dòng 1,2,3
+  for (int row = 0; row < 3; ++row) {
+    int idx = start + row;
+    char buf[21];
+
+    if (idx >= 0 && idx < I2C_MENU_COUNT) {
+      // Chuỗi dạng: "> 2. Test PCA9685" hoặc "  3. OLED IIC"
+      if (idx == currentI2CIndex) {
+        snprintf(buf, sizeof(buf), "> %d. %s", idx + 1, i2cSubMenuItems[idx]);
+      } else {
+        snprintf(buf, sizeof(buf), "  %d. %s", idx + 1, i2cSubMenuItems[idx]);
+      }
     } else {
-      lcdPrintLine(1 + i, "");
+      // Nếu không có mục hợp lệ (trường hợp menu ít hơn 3 mục)
+      snprintf(buf, sizeof(buf), " ");
     }
+
+    // Ghi ra LCD ở dòng 1,2,3
+    lcdPrintLine(1 + row, buf);
   }
 }
+
 
 #endif

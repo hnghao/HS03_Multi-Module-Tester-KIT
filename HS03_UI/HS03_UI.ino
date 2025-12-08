@@ -51,7 +51,9 @@ LedControl matrixLc = LedControl(MATRIX_DIN_PIN, MATRIX_CLK_PIN, MATRIX_CS_PIN, 
 enum MenuLevel {
   LEVEL_MAIN = 0,
   LEVEL_I2C_SUB,
+  LEVEL_BT_SUB,
   LEVEL_MATRIX_SUB,
+  LEVEL_I2C_OLED_SUB,
   LEVEL_RS485_SUB        // submenu cho Sensor RS485
 };
 
@@ -68,6 +70,7 @@ enum AppState {
   STATE_RS485_SHTC3,     // Sensor RS485: SHTC3
   STATE_SEGMENT_4X7_HC595,
   STATE_TM1637,           // 4x7 Segment TM1637
+  STATE_PCA9685_TEST,
   STATE_MAX6675
 };
 
@@ -77,33 +80,53 @@ enum AppState {
 // Menu chính
 const char* mainMenuItems[] = {
   "I2C",                 //  0
-  "DFRobot",             //  1
-  "Maker",               //  2
-  "Grove",               //  3
+  "Analog",              //  1
+  "Bluetooth",           //  2  (BLE)
+  "PS2",                 //  3
   "Sensor RS485",        //  4
-  "Traffic Led",         //  5
-  "Neopixel",            //  6
+  "Ultrasonic JSN",      //  5
+  "Traffic Led",         //  6
   "Max6675",             //  7
-  "Ultrasonic JSN",      //  8
-  "2x7 Segment HC595",   //  9
-  "4x7 Segment HC595",   // 10
-  "4x7 Segment TM1637",  // 11
-  "PS2",                 // 12
-  "BLE",                 // 13
-  "Analog",              // 14
-  "Led Matrix"           // 15
+  "2x7 Seg HC595",       //  8
+  "4/8x7 Seg HC595",     //  9
+  "4x7 Seg TM1637",      // 10
+  "Matrix",              // 11
+  "Neopixel",            // 12
+  "Grove",               // 13
+  "Maker",               // 14
+  "DFRobot"              // 15
 };
 
 const int MAIN_MENU_COUNT = sizeof(mainMenuItems) / sizeof(mainMenuItems[0]);
 
 // Sub-menu I2C
+// Sub-menu I2C
 const char* const i2cSubMenuItems[] = {
   "Scan",
   "Test PCA9685",
+  "OLED IIC",
   "<-- Back"
 };
 
 const int I2C_MENU_COUNT = sizeof(i2cSubMenuItems) / sizeof(i2cSubMenuItems[0]);
+
+// Sub-menu Bluetooth
+const char* const btSubMenuItems[] = {
+  "1. JDY-33",
+  "2. BT Slot 2",
+  "3. BT Slot 3",
+  "<-- Back"
+};
+const int BT_MENU_COUNT = sizeof(btSubMenuItems) / sizeof(btSubMenuItems[0]);
+
+// Submenu cho OLED IIC
+const char* const i2cOledSubMenuItems[] = {
+  "OLED 0.91\"",
+  "OLED 0.96\"",
+  "OLED 1.3\"",
+  "<-- Back"
+};
+const int I2C_OLED_MENU_COUNT = sizeof(i2cOledSubMenuItems) / sizeof(i2cOledSubMenuItems[0]);
 
 // Sub-menu Led Matrix (chỉ còn Matrix 8x32 + Back)
 const char* const matrixSubMenuItems[] = {
@@ -140,15 +163,17 @@ AppState  appState     = STATE_SPLASH;
 
 int currentMainIndex   = 0;
 int currentI2CIndex    = 0;
+int currentI2COLEDIndex = 0;   // index cho submenu OLED IIC
 int currentMatrixIndex = 0;    // index cho sub-menu Led Matrix
 int currentRS485Index  = 0;    // index cho sub-menu RS485
+int currentBTIndex     = 0;    // index cho submenu Bluetooth
 
 int  lastClkState     = HIGH;
 bool lastBtnState     = HIGH;
 unsigned long lastBtnTime     = 0;
 unsigned long lastEncoderTime = 0;
 const unsigned long BTN_DEBOUNCE      = 200; // ms
-const unsigned long ENCODER_DEBOUNCE  = 3;   // ms
+const unsigned long ENCODER_DEBOUNCE  = 1;   // ms
 
 char headerLabel[16] = "";
 
@@ -180,12 +205,15 @@ unsigned long        lastDFRobotUpdate        = 0;
 // ======================
 void onEncoderTurn(int direction);
 void onButtonClick();
+void exitPCA9685ToI2CMenu();
 void printMatrixSubMenuItem();
 void printRS485SubMenuItem();
-
+void printI2COLEDSubMenuItem();
 void drawMatrixHeader(uint8_t funcIndex);
 void drawRS485Header(uint8_t funcIndex);
-
+void drawI2COLEDHeader(uint8_t funcIndex);
+void printBTSubMenuItem();
+void drawBTHeader(uint8_t funcIndex);    // <-- THÊM DÒNG NÀY
 // Kéo các file header
 #include "Display.h"
 #include "CountdownBuzzer.h"
@@ -204,6 +232,11 @@ void drawRS485Header(uint8_t funcIndex);
 #include "UltrasonicJSNMode.h"   // <--- THÊM DÒNG NÀY
 #include "PS2Mode.h"
 #include "MAX6675Mode.h"
+#include "OLED091Mode.h"
+#include "OLED096Mode.h"
+#include "OLED13Mode.h"
+#include "BluetoothJDY33Mode.h"   // mode Bluetooth JDY-33
+
 // Định nghĩa object MAX6675 dùng chung cho mode
 MAX6675 max6675(MAX6675_CLK_PIN, MAX6675_CS_PIN, MAX6675_DO_PIN);
 
@@ -327,6 +360,35 @@ void setup() {
   printMainMenuItem();
 }
 
+void exitPCA9685ToI2CMenu() {
+  // Tắt xung servo trước khi thoát
+  stopPCA9685TestMode();
+
+  // Về lại menu I2C
+  appState    = STATE_MENU;
+  currentLevel = LEVEL_I2C_SUB;
+  currentI2CIndex = 1;   // mục "Test PCA9685"
+
+  strncpy(headerLabel, "I2C Menu", sizeof(headerLabel));
+  headerLabel[sizeof(headerLabel) - 1] = '\0';
+
+  printI2CSubMenuItem();   // hàm này sẽ cập nhật LCD (gồm cả dòng header)
+}
+
+void printI2COLEDSubMenuItem() {
+  lcd.clear();
+
+  // Header riêng cho menu OLED: "OLED x/3  NNs"
+  drawI2COLEDHeader(currentI2COLEDIndex);
+
+  // Dòng 1: tên mục con đang chọn
+  lcdPrintLine(1, i2cOledSubMenuItems[currentI2COLEDIndex]);
+
+  // Dòng 2-3: gợi ý thao tác (giữ nguyên)
+  lcdPrintLine(2, "Xoay encoder de chon");
+  lcdPrintLine(3, "Nhan nut de OK");
+}
+
 // ======================
 // LOOP
 // ======================
@@ -378,6 +440,10 @@ void loop() {
       updateMAX6675Mode(now);
       break;
 
+    case STATE_PCA9685_TEST:
+      updatePCA9685TestMode(now);
+      break;
+
     default:
       break;
   }
@@ -414,6 +480,12 @@ void loop() {
       drawMatrixHeader(currentMatrixIndex);
     } else if (currentLevel == LEVEL_RS485_SUB) {
       drawRS485Header(currentRS485Index);
+    } else if (currentLevel == LEVEL_I2C_OLED_SUB) {
+    // Đảm bảo khi đang ở menu OLED thì header luôn là "OLED x/3 NNs"
+    drawI2COLEDHeader(currentI2COLEDIndex);
+    } else if (currentLevel == LEVEL_BT_SUB) {
+      // Đảm bảo khi đang ở menu Bluetooth thì header luôn là "BLE x/3 NNs"
+      drawBTHeader(currentBTIndex);
     }
   } else if (appState == STATE_MATRIX_8X32) {
     drawMatrixHeader(0);
@@ -423,34 +495,138 @@ void loop() {
 }
 
 // ======================
+// Hàm vẽ header cho OLED IIC
+// Hiển thị dạng: "OLED x/3  NNs"
+// ======================
+void drawI2COLEDHeader(uint8_t funcIndex) {
+  // funcIndex: 0..3 (0=0.91, 1=0.96, 2=1.3, 3=Back)
+  uint8_t pos;
+  if (funcIndex <= 2) {
+    pos = funcIndex + 1;   // 1..3 cho 3 loại OLED
+  } else {
+    pos = 3;               // "<-- Back" xem như 3/3
+  }
+
+  const uint8_t total = 3; // 3 loại OLED
+
+  int cd = countdownRemaining;
+  if (cd < 0) cd = 0;
+
+  char buf[21];
+  snprintf(buf, sizeof(buf), "OLED %u/%u %3ds", pos, total, cd);
+
+  uint8_t len = strlen(buf);
+  while (len < 20) {
+    buf[len++] = ' ';
+  }
+  buf[20] = '\0';
+
+  lcd.setCursor(0, 0);
+  lcd.print(buf);
+}
+
+// ======================
+// Hàm vẽ header cho Bluetooth
+// Hiển thị dạng: "BLE x/3  NNs"
+// ======================
+void drawBTHeader(uint8_t funcIndex) {
+  // funcIndex: 0..3 (0=JDY-33, 1=BT Slot 2, 2=BT Slot 3, 3=Back)
+  uint8_t pos;
+  if (funcIndex <= 2) {
+    pos = funcIndex + 1;   // 1..3 cho 3 slot BT
+  } else {
+    pos = 3;               // "<-- Back" xem như 3/3
+  }
+
+  const uint8_t total = 3; // 3 slot Bluetooth
+
+  int cd = countdownRemaining;
+  if (cd < 0) cd = 0;
+
+  char buf[21];
+  snprintf(buf, sizeof(buf), "BLE %u/%u %3ds", pos, total, cd);
+
+  uint8_t len = strlen(buf);
+  while (len < 20) {
+    buf[len++] = ' ';
+  }
+  buf[20] = '\0';
+
+  lcd.setCursor(0, 0);
+  lcd.print(buf);
+}
+
+// ======================
 // Xử lý xoay encoder
 // ======================
 void onEncoderTurn(int direction) {
-  // Chỉ cho phép xoay khi ở MENU
+  // Đang ở mode Test PCA9685 -> dùng encoder để chỉnh góc servo
+  if (appState == STATE_PCA9685_TEST) {
+    // Không đụng tới logic trong mode PCA9685
+    pca9685OnEncoderTurn(direction);
+    return;
+  }
+
+  // Chỉ cho phép xoay khi ở MENU (con trỏ menu)
   if (appState != STATE_MENU) return;
 
+  // ====== TĂNG TỐC THEO TỐC ĐỘ XOAY ======
+  // Xoay càng nhanh thì bước nhảy càng lớn (2 hoặc 3 bước/lần)
+  static unsigned long lastTurnMs = 0;
+  unsigned long now = millis();
+  unsigned long dt  = now - lastTurnMs;
+  lastTurnMs = now;
+
+  int step = 1;  // mặc định nhảy 1 mục
+
+  // Nếu quay nhanh (liên tục, dt nhỏ) thì nhảy nhiều mục hơn
+  if (dt < 40) {
+    step = 3;    // xoay rất nhanh
+  } else if (dt < 120) {
+    step = 2;    // xoay nhanh vừa
+  }
+
+  int delta = direction * step;
+  // =======================================
+
   if (currentLevel == LEVEL_MAIN) {
-    currentMainIndex += direction;
+    currentMainIndex += delta;
     if (currentMainIndex < 0) currentMainIndex = MAIN_MENU_COUNT - 1;
     if (currentMainIndex >= MAIN_MENU_COUNT) currentMainIndex = 0;
     printMainMenuItem();
+
   } else if (currentLevel == LEVEL_I2C_SUB) {
-    currentI2CIndex += direction;
+    currentI2CIndex += delta;
     if (currentI2CIndex < 0) currentI2CIndex = I2C_MENU_COUNT - 1;
     if (currentI2CIndex >= I2C_MENU_COUNT) currentI2CIndex = 0;
     printI2CSubMenuItem();
+
+  } else if (currentLevel == LEVEL_BT_SUB) {
+    currentBTIndex += delta;
+    if (currentBTIndex < 0) currentBTIndex = BT_MENU_COUNT - 1;
+    if (currentBTIndex >= BT_MENU_COUNT) currentBTIndex = 0;
+    printBTSubMenuItem();
+
+  } else if (currentLevel == LEVEL_I2C_OLED_SUB) {
+    currentI2COLEDIndex += delta;
+    if (currentI2COLEDIndex < 0) currentI2COLEDIndex = I2C_OLED_MENU_COUNT - 1;
+    if (currentI2COLEDIndex >= I2C_OLED_MENU_COUNT) currentI2COLEDIndex = 0;
+    printI2COLEDSubMenuItem();
+
   } else if (currentLevel == LEVEL_MATRIX_SUB) {
-    currentMatrixIndex += direction;
+    currentMatrixIndex += delta;
     if (currentMatrixIndex < 0) currentMatrixIndex = MATRIX_MENU_COUNT - 1;
     if (currentMatrixIndex >= MATRIX_MENU_COUNT) currentMatrixIndex = 0;
     printMatrixSubMenuItem();   // in lại menu + header Matrix
+
   } else if (currentLevel == LEVEL_RS485_SUB) {
-    currentRS485Index += direction;
+    currentRS485Index += delta;
     if (currentRS485Index < 0) currentRS485Index = RS485_MENU_COUNT - 1;
     if (currentRS485Index >= RS485_MENU_COUNT) currentRS485Index = 0;
     printRS485SubMenuItem();
   }
 }
+
 
 // ======================
 // Xử lý nút nhấn
@@ -466,6 +642,14 @@ void onButtonClick() {
     return;
   }
 
+  // Đang ở Test PCA9685
+  //  - 1 click: thoát về menu I2C (xử lý trễ trong updatePCA9685TestMode)
+  //  - 2 click nhanh: reset 16 servo về 90°
+  if (appState == STATE_PCA9685_TEST) {
+    pcaOnRawButtonClick();
+    return;
+  }
+
   // Đang ở Analog -> về MENU
   if (appState == STATE_ANALOG) {
     appState = STATE_MENU;
@@ -473,10 +657,10 @@ void onButtonClick() {
     return;
   }
 
-  // Đang ở DFRobot Analog -> về MENU
+  // Đang ở DFRobot Analog -> về MENU, đưa con trỏ về DFRobot
   if (appState == STATE_DFROBOT_ANALOG) {
     appState = STATE_MENU;
-    currentMainIndex = 1;   // DFRobot
+    currentMainIndex = 15;   // DFRobot (mục 16)
     printMainMenuItem();
     return;
   }
@@ -502,6 +686,10 @@ void onButtonClick() {
     appState = STATE_MENU;
     if (currentLevel == LEVEL_I2C_SUB) {
       printI2CSubMenuItem();
+    } else if (currentLevel == LEVEL_I2C_OLED_SUB) {
+      printI2COLEDSubMenuItem();
+    } else if (currentLevel == LEVEL_BT_SUB) {
+      printBTSubMenuItem();
     } else if (currentLevel == LEVEL_MATRIX_SUB) {
       printMatrixSubMenuItem();
     } else if (currentLevel == LEVEL_RS485_SUB) {
@@ -538,7 +726,7 @@ void onButtonClick() {
     return;
   }
 
-  // Đang ở 4x7 Segment HC595
+  // Đang ở 4x7 Segment HC595 (4/8 LED)
   //  - Lần nhấn đầu (ở trang chọn 4/8) -> handle4x7HC595ButtonClick() trả true -> CHỌN mode, KHÔNG thoát
   //  - Lần nhấn sau (khi đang RUN)     -> handle... trả false -> thoát về MENU như cũ
   if (appState == STATE_SEGMENT_4X7_HC595) {
@@ -559,103 +747,89 @@ void onButtonClick() {
     return;
   }
 
-  // Đang ở MENU: xử lý chọn chức năng
-  if (appState == STATE_MENU) {
-    if (currentLevel == LEVEL_MAIN) {
-      switch (currentMainIndex) {
-        case 0: // I2C
-          currentLevel    = LEVEL_I2C_SUB;
-          currentI2CIndex = 0;
-          strncpy(headerLabel, "I2C Menu", sizeof(headerLabel));
-          headerLabel[sizeof(headerLabel) - 1] = '\0';
-          printI2CSubMenuItem();
-          break;
+  // Nếu KHÔNG phải đang ở STATE_MENU thì không xử lý thêm
+  if (appState != STATE_MENU) return;
 
-        case 1: // DFRobot
-          startDFRobotAnalogMode();
-          break;
+  // ==========================
+  // ĐANG Ở MENU: xử lý chọn
+  // ==========================
+  if (currentLevel == LEVEL_MAIN) {
+    // ===== MENU CHÍNH =====
+    switch (currentMainIndex) {
+      case 0: // I2C
+        currentLevel    = LEVEL_I2C_SUB;
+        currentI2CIndex = 0;
+        strncpy(headerLabel, "I2C Menu", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printI2CSubMenuItem();
+        break;
 
-        case 4: { // Sensor RS485
-          currentLevel      = LEVEL_RS485_SUB;
-          currentRS485Index = 0;
-          strncpy(headerLabel, "RS485", sizeof(headerLabel));
-          headerLabel[sizeof(headerLabel) - 1] = '\0';
-          printRS485SubMenuItem();
-        } break;
+      case 1: // Analog (ReadAnalog)
+        startAnalogMode();
+        break;
 
-        case 5: // Traffic Led
-          startTrafficLedMode();
-          break;
+      case 2: { // Bluetooth -> vào submenu Bluetooth
+        currentLevel   = LEVEL_BT_SUB;
+        currentBTIndex = 0;
+        strncpy(headerLabel, "Bluetooth", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printBTSubMenuItem();
+      } break;
 
-        case 14: // Analog (ReadAnalog)
-          startAnalogMode();
-          break;
+      case 3: { // PS2
+        // Chạy mode PS2 (blocking), hiển thị LCD đúng chương trình gốc
+        startPS2Mode();
 
-        case 15: { // Led Matrix (sub-menu)
-          currentLevel       = LEVEL_MATRIX_SUB;
-          currentMatrixIndex = 0;
-          strncpy(headerLabel, "Matrix", sizeof(headerLabel));
-          headerLabel[sizeof(headerLabel) - 1] = '\0';
-          printMatrixSubMenuItem();
-        } break;
-
-        case 6: { // Neopixel
-        // Hiển thị trang thông tin NeoPixel trên LCD
-        lcd.clear();
-        lcdPrintLine(0, "Neopixel");
-        lcdPrintLine(1, "Chu ky RGB+Trang");
-        lcdPrintLine(2, "Nhan nut de dung");
-        lcdPrintLine(3, " ");
-
-        // Chạy mode NeoPixel (blocking, tuong tu TM1637 / 4x7 HC595)
-        startNeoPixelMode();
-
-        // Sau khi thoat -> quay ve MENU
+        // Sau khi thoát PS2 -> quay lại MENU chính
         appState     = STATE_MENU;
         currentLevel = LEVEL_MAIN;
         strncpy(headerLabel, "Menu", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
         printMainMenuItem();
-        } break;
+      } break;
 
-        case 11: { // 4x7 Segment TM1637
-        // Không đổi appState sang STATE_TM1637 nữa,
-        // TM1637 sẽ tự chạy blocking bên trong startTM1637Mode()
+      case 4: { // Sensor RS485
+        currentLevel      = LEVEL_RS485_SUB;
+        currentRS485Index = 0;
+        strncpy(headerLabel, "RS485", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printRS485SubMenuItem();
+      } break;
 
+      case 5: { // Ultrasonic JSN
+        // Hiển thị trang thông tin trên LCD
         lcd.clear();
-        lcdPrintLine(1, "TM1637: 12:34");
+        lcdPrintLine(0, "Ultrasonic JSN");
+        lcdPrintLine(1, "JSN-SR04T Mode 0");
         lcdPrintLine(2, "Nhan nut de thoat");
         lcdPrintLine(3, " ");
 
-        // Chạy demo TM1637 (12:34, nháy colon, thoát khi nhấn nút)
-        startTM1637Mode();
+        // Chạy mode đo khoảng cách (blocking)
+        startUltrasonicJSNMode();
 
-        // Sau khi thoát thì quay lại MENU như bình thường
+        // Sau khi thoát thì quay lại MENU chính
         appState     = STATE_MENU;
         currentLevel = LEVEL_MAIN;
         strncpy(headerLabel, "Menu", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
         printMainMenuItem();
-        } break;
+      } break;
 
-        case 10: { // 4x7 Segment HC595
-        appState = STATE_SEGMENT_4X7_HC595;
+      case 6: // Traffic Led
+        startTrafficLedMode();
+        break;
 
-        // Header dòng 0 vẫn do updateHeaderRow() vẽ (Menu + index + countdown)
-        strncpy(headerLabel, "4x7 HC595", sizeof(headerLabel));
+      case 7: { // Max6675
+        appState = STATE_MAX6675;
+        strncpy(headerLabel, "Max6675", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
         updateHeaderRow();
 
-        // Hướng dẫn trên LCD:
-        lcdPrintLine(1, "Nhan nut de thoat");
-        lcdPrintLine(2, "Mode: 4/8 LED 7 doan");
-        lcdPrintLine(3, "Xoay encoder doi");
-
-        // Khởi động mode 4x7 (khởi tạo chân + tắt an toàn)
-        start4x7HC595Mode();
+        // Dòng 1–3 do mode MAX6675 tự xử lý
+        startMAX6675Mode();
       } break;
 
-        case 9: { // 2x7 Segment HC595
+      case 8: { // 2x7 Segment HC595
         // Vẽ màn hình hướng dẫn
         lcd.clear();
         lcdPrintLine(0, "2x7 Segment HC595");
@@ -672,18 +846,59 @@ void onButtonClick() {
         strncpy(headerLabel, "Menu", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
         printMainMenuItem();
-        } break;
+      } break;
 
-        case 8: { // Ultrasonic JSN
-        // Hiển thị trang thông tin trên LCD
+      case 9: { // 4/8x7 Segment HC595
+        appState = STATE_SEGMENT_4X7_HC595;
+
+        // Header dòng 0 vẫn do updateHeaderRow() vẽ (Menu + countdown)
+        strncpy(headerLabel, "4x7 HC595", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        updateHeaderRow();
+
+        // Hướng dẫn trên LCD:
+        lcdPrintLine(1, "Nhan nut de thoat");
+        lcdPrintLine(2, "Mode: 4/8 LED 7 doan");
+        lcdPrintLine(3, "Xoay encoder doi");
+
+        // Khởi động mode 4/8x7
+        start4x7HC595Mode();
+      } break;
+
+      case 10: { // 4x7 Segment TM1637
         lcd.clear();
-        lcdPrintLine(0, "Ultrasonic JSN");
-        lcdPrintLine(1, "JSN-SR04T Mode 0");
+        lcdPrintLine(1, "TM1637: 12:34");
         lcdPrintLine(2, "Nhan nut de thoat");
         lcdPrintLine(3, " ");
 
-        // Chạy mode đo khoảng cách (blocking giống TM1637 / 4x7 / 2x7)
-        startUltrasonicJSNMode();
+        // Chạy demo TM1637 (12:34, nháy colon, thoát khi nhấn nút)
+        startTM1637Mode();
+
+        // Sau khi thoát thì quay lại MENU như bình thường
+        appState     = STATE_MENU;
+        currentLevel = LEVEL_MAIN;
+        strncpy(headerLabel, "Menu", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printMainMenuItem();
+      } break;
+
+      case 11: { // Matrix (sub-menu)
+        currentLevel       = LEVEL_MATRIX_SUB;
+        currentMatrixIndex = 0;
+        strncpy(headerLabel, "Matrix", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printMatrixSubMenuItem();
+      } break;
+
+      case 12: { // Neopixel
+        lcd.clear();
+        lcdPrintLine(0, "Neopixel");
+        lcdPrintLine(1, "Chu ky RGB+Trang");
+        lcdPrintLine(2, "Nhan nut de dung");
+        lcdPrintLine(3, " ");
+
+        // Chạy mode NeoPixel (blocking)
+        startNeoPixelMode();
 
         // Sau khi thoát thì quay lại MENU chính
         appState     = STATE_MENU;
@@ -691,101 +906,183 @@ void onButtonClick() {
         strncpy(headerLabel, "Menu", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
         printMainMenuItem();
-        } break;
+      } break;
 
-        case 12: { // PS2
-        // Chạy mode PS2 (blocking), hiển thị LCD đúng như chương trình gốc
-        startPS2Mode();
+      case 15: // DFRobot
+        startDFRobotAnalogMode();
+        break;
 
-        // Sau khi thoát PS2 -> quay lại MENU chính
-        appState     = STATE_MENU;
+      default:
+        // Grove, Maker... dùng màn hình mặc định
+        showMainFunctionScreen(currentMainIndex);
+        break;
+    }
+
+  } else if (currentLevel == LEVEL_I2C_SUB) {
+    // ===== SUB-MENU I2C =====
+    switch (currentI2CIndex) {
+      case 0: // I2C Scan
+        startI2CScanMode();
+        break;
+
+      case 1: { // Test PCA9685
+        appState = STATE_PCA9685_TEST;
+        strncpy(headerLabel, "Test PCA9685", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        updateHeaderRow();
+        startPCA9685TestMode();
+      } break;
+
+      case 2: { // OLED IIC -> sang submenu OLED
+        currentLevel        = LEVEL_I2C_OLED_SUB;
+        currentI2COLEDIndex = 0;
+        strncpy(headerLabel, "OLED", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printI2COLEDSubMenuItem();
+      } break;
+
+      case 3: { // <-- Back
         currentLevel = LEVEL_MAIN;
         strncpy(headerLabel, "Menu", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
         printMainMenuItem();
-        } break;
+      } break;
+    }
 
-        case 7: { // Max6675  (nếu index khác thì sửa số 7 cho đúng)
-          appState = STATE_MAX6675;
-          strncpy(headerLabel, "Max6675", sizeof(headerLabel));
-          headerLabel[sizeof(headerLabel) - 1] = '\0';
-          updateHeaderRow();
+  } else if (currentLevel == LEVEL_I2C_OLED_SUB) {
+    // ===== SUB-MENU OLED IIC =====
+    switch (currentI2COLEDIndex) {
+      case 0: { // OLED 0.91"
+        // Chạy demo OLED 0.91" (blocking)
+        startOLED091Mode();
 
-          // Dòng 1–3 do mode tự xử lý
-          startMAX6675Mode();
-        } break;
+        // Sau khi thoát -> quay về menu OLED
+        appState     = STATE_MENU;
+        currentLevel = LEVEL_I2C_OLED_SUB;
+        strncpy(headerLabel, "OLED", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printI2COLEDSubMenuItem();
+      } break;
 
-        default:
-          // Các mục khác: hiện màn hình đơn giản
-          showMainFunctionScreen(currentMainIndex);
-          break;
-        }
-    } else if (currentLevel == LEVEL_I2C_SUB) {
-      switch (currentI2CIndex) {
-        case 0: // I2C Scan
-          startI2CScanMode();
-          break;
-        case 1: { // Test PCA9685
-        // Chạy chương trình test PCA9685 (blocking, tự xử lý countdown + buzzer)
-        startPCA9685TestMode();
+      case 1: { // OLED 0.96"
+        startOLED096Mode();
 
-        // Sau khi thoát test, quay lại submenu I2C như cũ
+        appState     = STATE_MENU;
+        currentLevel = LEVEL_I2C_OLED_SUB;
+        strncpy(headerLabel, "OLED", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printI2COLEDSubMenuItem();
+      } break;
+
+      case 2: { // OLED 1.3"
+        startOLED13Mode();
+
+        appState     = STATE_MENU;
+        currentLevel = LEVEL_I2C_OLED_SUB;
+        strncpy(headerLabel, "OLED", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printI2COLEDSubMenuItem();
+      } break;
+
+      case 3: { // <-- Back -> quay về submenu I2C
+        currentLevel = LEVEL_I2C_SUB;
         strncpy(headerLabel, "I2C Menu", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
         printI2CSubMenuItem();
-        } break;
-        case 2: // Back
-          currentLevel = LEVEL_MAIN;
-          strncpy(headerLabel, "Menu", sizeof(headerLabel));
-          headerLabel[sizeof(headerLabel) - 1] = '\0';
-          printMainMenuItem();
-          break;
-      }
-    } else if (currentLevel == LEVEL_MATRIX_SUB) {
-      switch (currentMatrixIndex) {
-        case 0: { // Matrix 8x32
-          appState = STATE_MATRIX_8X32;
-          drawMatrixHeader(0);       // Header: "Matrix 1/1"
-          lcdPrintLine(1, "Nhan nut de thoat");
-          lcdPrintLine(2, "LED: hieu ung mua");
-          lcdPrintLine(3, " ");
-          startMatrix8x32Mode();
-        } break;
+      } break;
+    }
 
-        case 1: { // Back
-          currentLevel = LEVEL_MAIN;
-          strncpy(headerLabel, "Menu", sizeof(headerLabel));
-          headerLabel[sizeof(headerLabel) - 1] = '\0';
-          printMainMenuItem();
-        } break;
-      }
-    } else if (currentLevel == LEVEL_RS485_SUB) {
-      switch (currentRS485Index) {
-        case 0: { // 1. SHTC3
-          appState = STATE_RS485_SHTC3;
-          startRS485SHTC3Mode();  // bắt đầu đọc cảm biến + set LCD
-        } break;
+  } else if (currentLevel == LEVEL_BT_SUB) {
+    // ===== SUB-MENU BLUETOOTH =====
+    switch (currentBTIndex) {
+      case 0: { // 1. JDY-33
+        // Chạy mode JDY-33 (blocking): gửi AT + hiển thị LCD
+        startBluetoothJDY33Mode();
 
-        case 1:   // 2. Sensor 2 (chưa dùng)
-        case 2: { // 3. Sensor 3 (chưa dùng)
-          appState = STATE_SIMPLE_SCREEN;
-          lcd.clear();
-          lcdPrintLine(0, "Sensor RS485");
-          lcdPrintLine(1, rs485SubMenuItems[currentRS485Index]);
-          lcdPrintLine(2, "Chua cai dat");
-          lcdPrintLine(3, "Nhan nut de quay lai");
-        } break;
+        // Sau khi thoát -> quay lại submenu Bluetooth
+        appState     = STATE_MENU;
+        currentLevel = LEVEL_BT_SUB;
+        strncpy(headerLabel, "Bluetooth", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printBTSubMenuItem();
+      } break;
 
-        case 3: { // <-- Back
-          currentLevel = LEVEL_MAIN;
-          strncpy(headerLabel, "Menu", sizeof(headerLabel));
-          headerLabel[sizeof(headerLabel) - 1] = '\0';
-          printMainMenuItem();
-        } break;
-      }
+      case 1: { // 2. BT Slot 2 (để trống)
+        appState = STATE_SIMPLE_SCREEN;
+        strncpy(headerLabel, "BT Slot 2", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        updateHeaderRow();
+        lcdPrintLine(1, "Bluetooth Slot 2");
+        lcdPrintLine(2, "Demo se them sau");
+        lcdPrintLine(3, "Nhan nut de quay lai");
+      } break;
+
+      case 2: { // 3. BT Slot 3 (để trống)
+        appState = STATE_SIMPLE_SCREEN;
+        strncpy(headerLabel, "BT Slot 3", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        updateHeaderRow();
+        lcdPrintLine(1, "Bluetooth Slot 3");
+        lcdPrintLine(2, "Demo se them sau");
+        lcdPrintLine(3, "Nhan nut de quay lai");
+      } break;
+
+      case 3: { // <-- Back
+        currentLevel = LEVEL_MAIN;
+        strncpy(headerLabel, "Menu", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printMainMenuItem();
+      } break;
+    }
+
+  } else if (currentLevel == LEVEL_MATRIX_SUB) {
+    // ===== SUB-MENU MATRIX =====
+    switch (currentMatrixIndex) {
+      case 0: { // Matrix 8x32
+        appState = STATE_MATRIX_8X32;
+        drawMatrixHeader(0);       // Header: "Matrix 1/1  NNs"
+        lcdPrintLine(1, "Nhan nut de thoat");
+        lcdPrintLine(2, "LED: hieu ung mua");
+        lcdPrintLine(3, " ");
+        startMatrix8x32Mode();
+      } break;
+
+      case 1: { // <-- Back
+        currentLevel = LEVEL_MAIN;
+        strncpy(headerLabel, "Menu", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printMainMenuItem();
+      } break;
+    }
+
+  } else if (currentLevel == LEVEL_RS485_SUB) {
+    // ===== SUB-MENU SENSOR RS485 =====
+    switch (currentRS485Index) {
+      case 0: { // 1. SHTC3
+        appState = STATE_RS485_SHTC3;
+        startRS485SHTC3Mode();  // bắt đầu đọc cảm biến + set LCD
+      } break;
+
+      case 1:   // 2. Sensor 2 (chưa dùng)
+      case 2: { // 3. Sensor 3 (chưa dùng)
+        appState = STATE_SIMPLE_SCREEN;
+        lcd.clear();
+        lcdPrintLine(0, "Sensor RS485");
+        lcdPrintLine(1, rs485SubMenuItems[currentRS485Index]);
+        lcdPrintLine(2, "Chua cai dat");
+        lcdPrintLine(3, "Nhan nut de quay lai");
+      } break;
+
+      case 3: { // <-- Back
+        currentLevel = LEVEL_MAIN;
+        strncpy(headerLabel, "Menu", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printMainMenuItem();
+      } break;
     }
   }
 }
+
 
 // ======================
 // In sub-menu Led Matrix
@@ -820,3 +1117,21 @@ void printRS485SubMenuItem() {
   lcdPrintLine(2, "Nhan nut de chon");
   lcdPrintLine(3, "Xoay de doi Sensor");
 }
+
+// ======================
+// In sub-menu Bluetooth
+// ======================
+void printBTSubMenuItem() {
+  lcd.clear();
+
+  // Header riêng cho Bluetooth: "BLE x/3  NNs"
+  drawBTHeader(currentBTIndex);
+
+  // Dòng 1: tên mục hiện tại
+  lcdPrintLine(1, btSubMenuItems[currentBTIndex]);
+
+  // Dòng 2–3: hướng dẫn
+  lcdPrintLine(2, "Nhan nut de chon");
+  lcdPrintLine(3, "Xoay de doi muc");
+}
+
