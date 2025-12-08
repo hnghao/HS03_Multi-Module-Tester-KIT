@@ -1,104 +1,137 @@
-#include <Arduino.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 
-// ================= CẤU HÌNH PHẦN CỨNG =================
-// UART dùng để giao tiếp với Bluetooth
-#define BT_RX_PIN   2    // ESP32-S3 nhận dữ liệu (RX)  <-- TX của JDY-33 / HC-05
-#define BT_TX_PIN   1    // ESP32-S3 gửi dữ liệu (TX)  --> RX của JDY-33 / HC-05
+// -------------------- LCD2004 I2C --------------------
+#define I2C_SDA_PIN  6   // SDA của LCD2004 nối GPIO6
+#define I2C_SCL_PIN  7   // SCL của LCD2004 nối GPIO7
+#define LCD_ADDR     0x27  // Địa chỉ I2C thường gặp: 0x27 hoặc 0x3F
 
-// Baudrate AT (thử 9600 trước, nếu không được thì đổi thành 38400)
-#define BT_BAUD     9600
+LiquidCrystal_I2C lcd(LCD_ADDR, 20, 4);
 
-HardwareSerial BTSerial(1);  // Dùng UART1
+// -------------------- JDY-33 UART --------------------
+// THAY 2 chân này cho đúng với mạch của anh
+#define JDY_TX_PIN   1   // TX ESP32-S3 -> RX JDY-33
+#define JDY_RX_PIN   2   // RX ESP32-S3 <- TX JDY-33
 
-// Danh sách lệnh AT tự động gửi
-const char* atCommands[] = {
-  "AT",           // Kiểm tra module còn sống không
-  "AT+VERSION?",  // Xem version firmware
-  "AT+NAME?",     // Xem tên hiện tại
-  "AT+UART?",     // Xem cấu hình UART hiện tại
-  "AT+ROLE?"      // Xem vai trò (0: slave, 1: master - tùy module)
-};
-const uint8_t NUM_AT_COMMANDS = sizeof(atCommands) / sizeof(atCommands[0]);
+#define JDY_BAUD     9600
+#define AT_RESPONSE_TIMEOUT 1000  // thời gian chờ phản hồi (ms)
 
-// =============== HÀM GỬI & ĐỌC PHẢN HỒI AT ===============
-
-void sendAT(const char* cmd) {
-  Serial.print(F("\n>> Gửi lệnh: "));
-  Serial.println(cmd);
-
-  // Gửi lệnh đến module Bluetooth (kèm CRLF)
-  BTSerial.print(cmd);
-  BTSerial.print("\r\n");
-}
-
-// Đọc phản hồi từ module trong khoảng timeoutMs (ms)
-void readBTResponse(uint16_t timeoutMs) {
-  uint32_t start = millis();
-
-  Serial.println(F("<< Phản hồi:"));
-
-  while (millis() - start < timeoutMs) {
-    while (BTSerial.available()) {
-      char c = BTSerial.read();
-      Serial.write(c);  // In thẳng ra Serial Monitor
-    }
-  }
-
-  Serial.println();
-  Serial.println(F("---- Hết phản hồi ----"));
-}
-
-// Gửi lần lượt các lệnh AT để test
-void autoTestBluetooth() {
-  Serial.println(F("\n===== BẮT ĐẦU KIỂM TRA AT VỚI MODULE BLUETOOTH ====="));
-
-  for (uint8_t i = 0; i < NUM_AT_COMMANDS; i++) {
-    sendAT(atCommands[i]);     // Gửi lệnh
-    readBTResponse(800);       // Đọc phản hồi ~800ms
-    delay(400);                // Nghỉ một chút giữa các lệnh
-  }
-
-  Serial.println(F("===== KẾT THÚC KIỂM TRA TỰ ĐỘNG =====\n"));
-  Serial.println(F("Bây giờ bạn có thể gõ thêm lệnh AT trong Serial Monitor nếu muốn."));
-  Serial.println(F("Ví dụ: AT, AT+NAME=TEST_BT, AT+ROLE=0, ..."));
-}
-
-// ================= SETUP & LOOP =================
+// -------------------- Khai báo hàm -------------------
+bool sendAT(const char *label, const char *cmd);
 
 void setup() {
-  // Serial USB để debug
-  Serial.begin(115200);
-  while (!Serial) {
-    delay(10);
+  // Khởi tạo I2C cho LCD
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("JDY-33 STARTING");
+  lcd.setCursor(0, 1);
+  lcd.print("Init UART...      ");
+
+  // Khởi tạo UART cho JDY-33
+  Serial2.begin(JDY_BAUD, SERIAL_8N1, JDY_RX_PIN, JDY_TX_PIN);
+  delay(200);
+
+  lcd.setCursor(0, 1);
+  lcd.print("Init UART: OK     ");
+  delay(500);
+
+  // Gửi các lệnh AT và hiển thị kết quả trên LCD
+  bool allOK = true;
+
+  allOK &= sendAT("AT",                      "AT");
+  allOK &= sendAT("Set NAME1",              "AT+NAMEJDY_Hshopvn");
+  allOK &= sendAT("Set NAME2",              "AT+NAMEJDY_Hshopvn_BLE");
+  allOK &= sendAT("Read NAME",              "AT+NAME");
+  allOK &= sendAT("Set BAUD4",              "AT+BAUD4");
+
+  // Màn hình tổng kết
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("JDY-33 DONE");
+
+  lcd.setCursor(0, 1);
+  if (allOK) {
+    lcd.print("Tat ca lenh OK   ");
+  } else {
+    lcd.print("Co lenh bi FAIL  ");
   }
 
-  Serial.println();
-  Serial.println(F("ESP32-S3 <-> JDY-33 / HC-05 - Tự động gửi lệnh AT kiểm tra"));
-  Serial.println(F("Mở Serial Monitor 115200, chọn Both NL & CR."));
-
-  // Khởi động UART1 cho Bluetooth
-  BTSerial.begin(BT_BAUD, SERIAL_8N1, BT_RX_PIN, BT_TX_PIN);
-  Serial.print(F("Đang dùng UART1 với baud: "));
-  Serial.println(BT_BAUD);
-
-  delay(500);  // Đợi module ổn định 1 chút
-
-  // Gửi một loạt lệnh AT tự động để kiểm tra
-  autoTestBluetooth();
+  lcd.setCursor(0, 2);
+  lcd.print("Module san sang   ");
 }
 
 void loop() {
-  // Phần này tùy chọn: tạo "cầu nối" để có thể gõ lệnh AT thủ công
+  // Không làm gì thêm, chỉ giữ màn hình kết quả
+  // (Neu muon, co the bo sung hien thi trang thai khac o day)
+}
 
-  // Dữ liệu từ Bluetooth -> PC
-  if (BTSerial.available()) {
-    char c = BTSerial.read();
-    Serial.write(c);
+// -------------------- Hàm gửi AT + hiển thị LCD --------------------
+bool sendAT(const char *label, const char *cmd) {
+  // Xoá buffer cũ (nếu có)
+  while (Serial2.available()) {
+    Serial2.read();
   }
 
-  // Dữ liệu từ PC (Serial Monitor) -> Bluetooth
-  if (Serial.available()) {
-    char c = Serial.read();
-    BTSerial.write(c);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("JDY-33 AT TEST   ");
+
+  lcd.setCursor(0, 1);
+  lcd.print("CMD: ");
+  lcd.print(label);
+
+  lcd.setCursor(0, 2);
+  lcd.print("Sending...       ");
+
+  // Gửi lệnh AT tới JDY-33 (kết thúc \r\n)
+  Serial2.print(cmd);
+  Serial2.print("\r\n");
+
+  String resp;
+  unsigned long start = millis();
+
+  while (millis() - start < AT_RESPONSE_TIMEOUT) {
+    while (Serial2.available()) {
+      char c = (char)Serial2.read();
+      resp += c;
+    }
   }
+
+  resp.trim();             // bỏ \r \n và khoảng trắng 2 đầu
+  bool ok = resp.length() > 0;
+
+  // Hiển thị trạng thái
+  lcd.setCursor(0, 2);
+  lcd.print("Status: ");
+  if (ok) {
+    lcd.print("OK   ");
+  } else {
+    lcd.print("FAIL ");
+  }
+
+  // Hiển thị một phần nội dung phản hồi (nếu có)
+  lcd.setCursor(0, 3);
+  lcd.print("Resp: ");
+
+  if (resp.length() == 0) {
+    lcd.print("No data      ");
+  } else {
+    resp.replace('\r', ' ');
+    resp.replace('\n', ' ');
+    // cắt ngắn để vừa 20 ký tự (từ cột 0)
+    if (resp.length() > 14) {
+      resp = resp.substring(0, 14);
+    }
+    lcd.setCursor(6, 3);       // "Resp: " là 6 ký tự
+    lcd.print("              "); // xoá phần cũ
+    lcd.setCursor(6, 3);
+    lcd.print(resp);
+  }
+
+  delay(1500); // cho anh thời gian đọc mỗi lệnh
+  return ok;
 }
