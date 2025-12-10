@@ -4,6 +4,7 @@
 #include <string.h>
 #include <Adafruit_NeoPixel.h>   // NeoPixel WS2812
 #include <LedControl.h>          // MAX7219
+#include <SoftwareSerial.h>      // <-- THÊM DÒNG NÀY
 
 // ======================
 // Cấu hình chân
@@ -29,6 +30,11 @@
 
 #define NEOPIXEL_PIN       5      // WS2812 tại GPIO5
 #define NEOPIXEL_LED_COUNT 144    // Tối đa 150 led
+
+#define RS485_RX_PIN  9   // RX ESP32-S3 nhận từ TX của module RS485
+#define RS485_TX_PIN  3   // TX ESP32-S3 gửi tới RX của module RS485
+
+SoftwareSerial RS485Serial(RS485_RX_PIN, RS485_TX_PIN);
 
 // LCD
 #define LCD_I2C_ADDR     0x27
@@ -68,6 +74,7 @@ enum AppState {
   STATE_SIMPLE_SCREEN,
   STATE_MATRIX_8X32,     // Matrix 8x32
   STATE_RS485_SHTC3,     // Sensor RS485: SHTC3
+  STATE_RS485_AGH3485,     // Sensor RS485: AGH3485 (ASAIR)
   STATE_SEGMENT_4X7_HC595,
   STATE_TM1637,           // 4x7 Segment TM1637
   STATE_PCA9685_TEST,
@@ -110,13 +117,13 @@ const char* const i2cSubMenuItems[] = {
 
 const int I2C_MENU_COUNT = sizeof(i2cSubMenuItems) / sizeof(i2cSubMenuItems[0]);
 
-// Sub-menu Bluetooth
 const char* const btSubMenuItems[] = {
   "1. JDY-33",
-  "2. BT Slot 2",
+  "2. HC-05",
   "3. BT Slot 3",
   "<-- Back"
 };
+
 const int BT_MENU_COUNT = sizeof(btSubMenuItems) / sizeof(btSubMenuItems[0]);
 
 // Submenu cho OLED IIC
@@ -138,10 +145,11 @@ const int MATRIX_MENU_COUNT = sizeof(matrixSubMenuItems) / sizeof(matrixSubMenuI
 // Sub-menu Sensor RS485
 const char* const rs485SubMenuItems[] = {
   "1. SHTC3",
-  "2. Sensor 2",
+  "2. AGH3485 (ASAIR)",
   "3. Sensor 3",
   "<-- Back"
 };
+
 const int RS485_MENU_COUNT = sizeof(rs485SubMenuItems) / sizeof(rs485SubMenuItems[0]);
 
 // ======================
@@ -236,6 +244,8 @@ void drawBTHeader(uint8_t funcIndex);    // <-- THÊM DÒNG NÀY
 #include "OLED096Mode.h"
 #include "OLED13Mode.h"
 #include "BluetoothJDY33Mode.h"   // mode Bluetooth JDY-33
+#include "BluetoothHC05Mode.h"    // mode Bluetooth HC-05
+#include "RS485AGH3485Mode.h" // mode đọc AGH3485 (ASAIR) RS485
 
 // Định nghĩa object MAX6675 dùng chung cho mode
 MAX6675 max6675(MAX6675_CLK_PIN, MAX6675_CS_PIN, MAX6675_DO_PIN);
@@ -428,6 +438,11 @@ void loop() {
     case STATE_RS485_SHTC3:
       updateRS485SHTC3Mode(now); // đọc SHTC3 RS485 & hiển thị LCD
       break;
+
+    case STATE_RS485_AGH3485:
+      updateRS485AGH3485Mode(now); // đọc AGH3485 RS485 & hiển thị LCD
+      break;
+
     case STATE_SEGMENT_4X7_HC595:
       update4x7HC595Mode(now);   // hàm này đã alias sang header mới
       break;
@@ -491,6 +506,8 @@ void loop() {
     drawMatrixHeader(0);
   } else if (appState == STATE_RS485_SHTC3) {
     drawRS485Header(0);   // SHTC3 là sensor 1/3
+  } else if (appState == STATE_RS485_AGH3485) {
+    drawRS485Header(1);   // AGH3485 là sensor 2/3
   }
 }
 
@@ -725,6 +742,16 @@ void onButtonClick() {
     printRS485SubMenuItem();
     return;
   }
+  
+  // Đang ở RS485 AGH3485 -> nhấn nút để thoát về submenu RS485
+  if (appState == STATE_RS485_AGH3485) {
+    stopRS485AGH3485Mode();    // dọn LCD dòng 1–3
+    appState     = STATE_MENU;
+    currentLevel = LEVEL_RS485_SUB;
+    printRS485SubMenuItem();
+    return;
+  }
+
 
   // Đang ở 4x7 Segment HC595 (4/8 LED)
   //  - Lần nhấn đầu (ở trang chọn 4/8) -> handle4x7HC595ButtonClick() trả true -> CHỌN mode, KHÔNG thoát
@@ -744,6 +771,35 @@ void onButtonClick() {
     stopMAX6675Mode();
     appState = STATE_MENU;
     printMainMenuItem();
+    return;
+  }
+
+  // Đang ở submenu RS485: chọn sensor
+  if (appState == STATE_MENU && currentLevel == LEVEL_RS485_SUB) {
+    if (currentRS485Index == 0) {
+      // 1. SHTC3
+      appState = STATE_RS485_SHTC3;
+      startRS485SHTC3Mode();
+    } else if (currentRS485Index == 1) {
+      // 2. AGH3485 (ASAIR)
+      appState = STATE_RS485_AGH3485;
+      startRS485AGH3485Mode();
+    } else if (currentRS485Index == 2) {
+      // 3. Sensor 3 (chưa dùng) -> màn "coming soon"
+      lcd.clear();
+      lcdPrintLine(0, "RS485 Sensor 3   ");
+      lcdPrintLine(1, "(Chua cai dat)   ");
+      lcdPrintLine(2, "Nhan nut de Back ");
+      lcdPrintLine(3, " ");
+      appState = STATE_SIMPLE_SCREEN;
+    } else {
+      // "<-- Back" -> quay lại MENU chính
+      currentLevel     = LEVEL_MAIN;
+      currentMainIndex = 4;   // "Sensor RS485" trong mainMenuItems
+      strncpy(headerLabel, "Menu", sizeof(headerLabel));
+      headerLabel[sizeof(headerLabel) - 1] = '\0';
+      printMainMenuItem();
+    }
     return;
   }
 
@@ -993,37 +1049,50 @@ void onButtonClick() {
     }
 
   } else if (currentLevel == LEVEL_BT_SUB) {
-    // ===== SUB-MENU BLUETOOTH =====
     switch (currentBTIndex) {
       case 0: { // 1. JDY-33
-        // Chạy mode JDY-33 (blocking): gửi AT + hiển thị LCD
+        // Hiển thị màn hình chờ 5 giây trước khi gửi AT
+        lcd.clear();
+        lcdPrintLine(0, "Bluetooth: JDY-33");
+        lcdPrintLine(1, "Khoi dong sau 5s");
+        lcdPrintLine(2, "Vui long cho...");
+        lcdPrintLine(3, " ");
+
+        // Đợi 5 giây để module ổn định rồi mới gửi lệnh AT
+        delay(5000);
+
+        // Chạy chương trình JDY-33 (blocking, dùng header BluetoothJDY33Mode.h)
         startBluetoothJDY33Mode();
 
-        // Sau khi thoát -> quay lại submenu Bluetooth
+        // Sau khi thoát JDY-33 -> quay lại submenu Bluetooth
         appState     = STATE_MENU;
         currentLevel = LEVEL_BT_SUB;
-        strncpy(headerLabel, "Bluetooth", sizeof(headerLabel));
+        strncpy(headerLabel, "BLE", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
         printBTSubMenuItem();
       } break;
 
-      case 1: { // 2. BT Slot 2 (để trống)
-        appState = STATE_SIMPLE_SCREEN;
-        strncpy(headerLabel, "BT Slot 2", sizeof(headerLabel));
+      case 1: { // 2. HC-05
+        // Chạy mode HC-05 (blocking, giống chương trình gốc)
+        startBluetoothHC05Mode();
+
+        // Nếu sau này ta cho phép thoát khỏi HC-05,
+        // phần dưới sẽ đưa ta quay lại submenu Bluetooth:
+        appState     = STATE_MENU;
+        currentLevel = LEVEL_BT_SUB;
+        strncpy(headerLabel, "BLE", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
-        updateHeaderRow();
-        lcdPrintLine(1, "Bluetooth Slot 2");
-        lcdPrintLine(2, "Demo se them sau");
-        lcdPrintLine(3, "Nhan nut de quay lai");
+        printBTSubMenuItem();
       } break;
 
-      case 2: { // 3. BT Slot 3 (để trống)
+
+      case 2: { // 3. BT Slot 3 (để trống phát triển sau)
         appState = STATE_SIMPLE_SCREEN;
-        strncpy(headerLabel, "BT Slot 3", sizeof(headerLabel));
+        strncpy(headerLabel, "BLE", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
         updateHeaderRow();
-        lcdPrintLine(1, "Bluetooth Slot 3");
-        lcdPrintLine(2, "Demo se them sau");
+        lcdPrintLine(1, "BT Slot 3");
+        lcdPrintLine(2, "Chua cai dat");
         lcdPrintLine(3, "Nhan nut de quay lai");
       } break;
 
@@ -1034,8 +1103,7 @@ void onButtonClick() {
         printMainMenuItem();
       } break;
     }
-
-  } else if (currentLevel == LEVEL_MATRIX_SUB) {
+    } else if (currentLevel == LEVEL_MATRIX_SUB) {
     // ===== SUB-MENU MATRIX =====
     switch (currentMatrixIndex) {
       case 0: { // Matrix 8x32
