@@ -67,6 +67,7 @@ enum AppState {
   STATE_SPLASH,
   STATE_MENU,
   STATE_I2C_SCAN,
+  STATE_I2C_AM2315C,
   STATE_ANALOG,
   STATE_DFROBOT_ANALOG,
   STATE_TRAFFIC_LED,
@@ -108,13 +109,14 @@ const int MAIN_MENU_COUNT = sizeof(mainMenuItems) / sizeof(mainMenuItems[0]);
 
 // Sub-menu I2C
 // Sub-menu I2C
+// Sub-menu I2C
 const char* const i2cSubMenuItems[] = {
   "Scan",
   "Test PCA9685",
   "OLED IIC",
-  "<-- Back"
+  "AM2315C",      // mục số 4 mới
+  "<-- Back"      // giờ là mục số 5
 };
-
 const int I2C_MENU_COUNT = sizeof(i2cSubMenuItems) / sizeof(i2cSubMenuItems[0]);
 
 const char* const btSubMenuItems[] = {
@@ -246,6 +248,7 @@ void drawBTHeader(uint8_t funcIndex);    // <-- THÊM DÒNG NÀY
 #include "BluetoothJDY33Mode.h"   // mode Bluetooth JDY-33
 #include "BluetoothHC05Mode.h"    // mode Bluetooth HC-05
 #include "RS485AGH3485Mode.h" // mode đọc AGH3485 (ASAIR) RS485
+#include "AM2315CMode.h"
 
 // Định nghĩa object MAX6675 dùng chung cho mode
 MAX6675 max6675(MAX6675_CLK_PIN, MAX6675_CS_PIN, MAX6675_DO_PIN);
@@ -425,6 +428,9 @@ void loop() {
 
     case STATE_I2C_SCAN:
       updateI2CScanMode(now);
+      break;
+    case STATE_I2C_AM2315C:       
+      updateAM2315CMode(now);
       break;
 
     case STATE_NEOPIXEL:
@@ -684,6 +690,15 @@ void onButtonClick() {
 
   // Đang ở I2C Scan -> về submenu I2C
   if (appState == STATE_I2C_SCAN) {
+    appState     = STATE_MENU;
+    currentLevel = LEVEL_I2C_SUB;
+    printI2CSubMenuItem();
+    return;
+  }
+
+  // Đang ở AM2315C -> nhấn nút để quay về submenu I2C
+  if (appState == STATE_I2C_AM2315C) {
+    stopAM2315CMode();          // hiện tại không làm gì, nhưng để tương lai dễ mở rộng
     appState     = STATE_MENU;
     currentLevel = LEVEL_I2C_SUB;
     printI2CSubMenuItem();
@@ -975,7 +990,6 @@ void onButtonClick() {
     }
 
   } else if (currentLevel == LEVEL_I2C_SUB) {
-    // ===== SUB-MENU I2C =====
     switch (currentI2CIndex) {
       case 0: // I2C Scan
         startI2CScanMode();
@@ -989,22 +1003,29 @@ void onButtonClick() {
         startPCA9685TestMode();
       } break;
 
-      case 2: { // OLED IIC -> sang submenu OLED
+      case 2: { // OLED IIC
         currentLevel        = LEVEL_I2C_OLED_SUB;
         currentI2COLEDIndex = 0;
-        strncpy(headerLabel, "OLED", sizeof(headerLabel));
+        strncpy(headerLabel, "OLED IIC", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
         printI2COLEDSubMenuItem();
       } break;
 
-      case 3: { // <-- Back
+      case 3: { // AM2315C
+        appState = STATE_I2C_AM2315C;
+        strncpy(headerLabel, "AM2315C", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        updateHeaderRow();          // vẽ header: "AM2315C  xxxs"
+        startAM2315CMode();         // khởi động mode
+      } break;
+
+      case 4: // <-- Back
         currentLevel = LEVEL_MAIN;
         strncpy(headerLabel, "Menu", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
         printMainMenuItem();
-      } break;
+        break;
     }
-
   } else if (currentLevel == LEVEL_I2C_OLED_SUB) {
     // ===== SUB-MENU OLED IIC =====
     switch (currentI2COLEDIndex) {
