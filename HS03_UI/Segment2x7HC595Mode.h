@@ -17,7 +17,7 @@ void handleBuzzer(unsigned long now);
 #define PIN_LOAD  4   // LOAD/LATCH -> RCLK(STCP)
 
 // Bản đồ bit (common CATHODE): Q0..Q7 = A,B,C,D,E,F,G,DP
-// bit = 1 -> segment SÁNG (cho LED CC) -> lát nữa sẽ đảo để dùng cho CA
+// Ở đây ta đánh số: bit0 = A, bit1 = B, ..., bit6 = G, bit7 = DP
 static const uint8_t DIGIT_CC_2X7[10] = {
   //  DP G F E D C B A
   0b00111111, // 0: A,B,C,D,E,F
@@ -38,16 +38,25 @@ inline uint8_t makeByteCA_2x7(uint8_t cc, bool dpOn) {
   return ~withDp;                               // CA: active LOW -> đảo bit
 }
 
-// Gửi 16 bit cho 2 x 74HC595 (mỗi con 8 bit)
-// Giả sử: byte đầu -> LED trái, byte sau -> LED phải (hoặc ngược lại tùy board)
+/*
+ * Gửi 16 bit cho 2 x 74HC595 (mỗi con 8 bit)
+ *
+ * - leftCA  : dữ liệu cho LED bên trái (hàng chục)
+ * - rightCA : dữ liệu cho LED bên phải (hàng đơn vị)
+ *
+ * Thứ tự shiftOut được chỉnh để tens nằm bên trái, ones bên phải.
+ */
 inline void push595_2x7(uint8_t leftCA, uint8_t rightCA) {
   digitalWrite(PIN_LOAD, LOW);
-  shiftOut(PIN_SDI, PIN_SCLK, MSBFIRST, leftCA);   // LED bên trái
-  shiftOut(PIN_SDI, PIN_SCLK, MSBFIRST, rightCA);  // LED bên phải
+  // Ghi byte của LED bên PHẢI trước
+  shiftOut(PIN_SDI, PIN_SCLK, MSBFIRST, rightCA);
+  // Sau đó ghi byte của LED bên TRÁI
+  shiftOut(PIN_SDI, PIN_SCLK, MSBFIRST, leftCA);
   digitalWrite(PIN_LOAD, HIGH);
 }
 
-// Mode 2x7: hiển thị 2 chữ số độc lập, đếm 00..99 rồi dừng, DP chớp sau mỗi 1s
+// Mode 2x7: intro 3s sáng toàn bộ, sau đó hiển thị 00..99 lặp lại,
+// DP của cả 2 LED chớp tắt mỗi 1s
 inline void start2x7HC595Mode() {
   // 1. Tạm dừng I2CScanBus vì dùng chung GPIO1/2 cho 74HC595
   I2CScanBus.end();
@@ -65,15 +74,25 @@ inline void start2x7HC595Mode() {
     delay(10);
   }
 
-  // 4. Tắt hết lúc bắt đầu
-  push595_2x7(0xFF, 0xFF);
+  // 4. Intro: BẬT TẤT CẢ CÁC LED trong 3 giây
+  //
+  // 74HC595 + LED 7 đoạn CA: 0xFF = OFF, 0x00 = tất cả segment ON (vì active LOW)
+  unsigned long introStart = millis();
+  push595_2x7(0x00, 0x00); // cả 2 LED: A..G + DP đều sáng
 
-  // ---- Biến điều khiển hiển thị ----
-  uint8_t number        = 0;        // hiển thị 00..99
-  bool    finishedCount = false;    // true khi đạt 99
+  while (millis() - introStart < 3000) {  // 3000ms = 3s
+    unsigned long now = millis();
+    // vẫn cập nhật countdown + buzzer trong thời gian intro
+    updateCountdown(now);
+    handleBuzzer(now);
+    delay(5);
+  }
+
+  // ---- Biến điều khiển hiển thị sau intro ----
+  uint8_t number = 0;  // hiển thị 00..99 lặp lại
 
   // Tốc độ tăng số (ms): có thể chỉnh nếu muốn nhanh/chậm hơn
-  const unsigned long STEP_INTERVAL = 150;  
+  const unsigned long STEP_INTERVAL = 150;
   unsigned long lastStepMillis = millis();
 
   // DP chớp tắt: mỗi 1 giây đổi trạng thái (1s ON, 1s OFF)
@@ -91,6 +110,7 @@ inline void start2x7HC595Mode() {
 
     // 5.1. Nhấn nút encoder -> thoát mode
     if (digitalRead(ENCODER_SW_PIN) == LOW) {
+      // debounce nhỏ để tránh lặp
       while (digitalRead(ENCODER_SW_PIN) == LOW) {
         delay(10);
       }
@@ -103,14 +123,12 @@ inline void start2x7HC595Mode() {
       dpOn = !dpOn;
     }
 
-    // 5.3. Tăng số từ 00 -> 99, sau đó đứng yên tại 99
-    if (!finishedCount && (now - lastStepMillis >= STEP_INTERVAL)) {
+    // 5.3. Tăng số từ 00 -> 99, sau đó quay lại 00 (lặp vô hạn)
+    if (now - lastStepMillis >= STEP_INTERVAL) {
       lastStepMillis = now;
-      if (number < 99) {
-        number++;
-      } else {
-        number        = 99;
-        finishedCount = true;   // không tăng nữa, giữ 99
+      number++;
+      if (number > 99) {
+        number = 0;
       }
     }
 
@@ -118,8 +136,8 @@ inline void start2x7HC595Mode() {
     uint8_t tens = number / 10;   // chữ số bên trái
     uint8_t ones = number % 10;   // chữ số bên phải
 
-    uint8_t leftCA  = makeByteCA_2x7(DIGIT_CC_2X7[tens], dpOn);
-    uint8_t rightCA = makeByteCA_2x7(DIGIT_CC_2X7[ones], dpOn);
+    uint8_t leftCA  = makeByteCA_2x7(DIGIT_CC_2X7[tens], dpOn); // LED trái = hàng chục
+    uint8_t rightCA = makeByteCA_2x7(DIGIT_CC_2X7[ones], dpOn); // LED phải = hàng đơn vị
 
     // 5.5. Xuất dữ liệu ra 2 LED 7 đoạn
     push595_2x7(leftCA, rightCA);

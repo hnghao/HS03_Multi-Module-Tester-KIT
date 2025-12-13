@@ -79,7 +79,9 @@ enum AppState {
   STATE_SEGMENT_4X7_HC595,
   STATE_TM1637,           // 4x7 Segment TM1637
   STATE_PCA9685_TEST,
-  STATE_MAX6675
+  STATE_MAX6675,
+  STATE_I2C_DHT20_AHT20
+
 };
 
 // ======================
@@ -108,14 +110,13 @@ const char* mainMenuItems[] = {
 const int MAIN_MENU_COUNT = sizeof(mainMenuItems) / sizeof(mainMenuItems[0]);
 
 // Sub-menu I2C
-// Sub-menu I2C
-// Sub-menu I2C
 const char* const i2cSubMenuItems[] = {
   "Scan",
   "Test PCA9685",
   "OLED IIC",
-  "AM2315C",      // mục số 4 mới
-  "<-- Back"      // giờ là mục số 5
+  "AM2315C",
+  "DHT20_AHT20",
+  "<-- Back"
 };
 const int I2C_MENU_COUNT = sizeof(i2cSubMenuItems) / sizeof(i2cSubMenuItems[0]);
 
@@ -249,6 +250,7 @@ void drawBTHeader(uint8_t funcIndex);    // <-- THÊM DÒNG NÀY
 #include "BluetoothHC05Mode.h"    // mode Bluetooth HC-05
 #include "RS485AGH3485Mode.h" // mode đọc AGH3485 (ASAIR) RS485
 #include "AM2315CMode.h"
+#include "DHT20AHT20Mode.h"
 
 // Định nghĩa object MAX6675 dùng chung cho mode
 MAX6675 max6675(MAX6675_CLK_PIN, MAX6675_CS_PIN, MAX6675_DO_PIN);
@@ -432,7 +434,9 @@ void loop() {
     case STATE_I2C_AM2315C:       
       updateAM2315CMode(now);
       break;
-
+    case STATE_I2C_DHT20_AHT20:
+      updateDHT20AHT20Mode(now);
+      break;
     case STATE_NEOPIXEL:
       updateNeoPixelMode(now);
       break;
@@ -450,7 +454,7 @@ void loop() {
       break;
 
     case STATE_SEGMENT_4X7_HC595:
-      update4x7HC595Mode(now);   // hàm này đã alias sang header mới
+        update4x7HC595Mode(now);   // hàm này đã alias sang header mới
       break;
 
     case STATE_TM1637:
@@ -699,6 +703,14 @@ void onButtonClick() {
   // Đang ở AM2315C -> nhấn nút để quay về submenu I2C
   if (appState == STATE_I2C_AM2315C) {
     stopAM2315CMode();          // hiện tại không làm gì, nhưng để tương lai dễ mở rộng
+    appState     = STATE_MENU;
+    currentLevel = LEVEL_I2C_SUB;
+    printI2CSubMenuItem();
+    return;
+  }
+
+  if (appState == STATE_I2C_DHT20_AHT20) {
+    stopDHT20AHT20Mode();
     appState     = STATE_MENU;
     currentLevel = LEVEL_I2C_SUB;
     printI2CSubMenuItem();
@@ -1019,7 +1031,15 @@ void onButtonClick() {
         startAM2315CMode();         // khởi động mode
       } break;
 
-      case 4: // <-- Back
+      case 4: { // DHT20_AHT20
+        appState = STATE_I2C_DHT20_AHT20;
+        strncpy(headerLabel, "DHT20_AHT20", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        // KHÔNG cần updateHeaderRow vì mode sẽ tự dùng dòng 0
+        startDHT20AHT20Mode();
+      } break;
+
+      case 5: // <-- Back
         currentLevel = LEVEL_MAIN;
         strncpy(headerLabel, "Menu", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';

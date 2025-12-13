@@ -109,13 +109,13 @@ void printI2CSubMenuItem() {
   // Logic cuộn:
   //  - Nếu con trỏ ở 0 hoặc 1 -> hiển thị (0,1,2)
   //  - Nếu con trỏ ở 2 hoặc 3 -> hiển thị (1,2,3)
-  int start = 0;
-  if (currentI2CIndex <= 1) {
-    start = 0;
-  } else {
-    start = I2C_MENU_COUNT - 3; // với 4 mục -> 1
-    if (start < 0) start = 0;   // phòng khi sau này ít hơn 3 mục
-  }
+  int start = currentI2CIndex - 1;     // luôn cố gắng để con trỏ ở giữa (dòng 2)
+  if (start < 0) start = 0;
+
+  int maxStart = I2C_MENU_COUNT - 3;   // 3 dòng hiển thị
+  if (maxStart < 0) maxStart = 0;
+
+  if (start > maxStart) start = maxStart;
 
   // Vẽ 3 dòng menu tại dòng 1,2,3
   for (int row = 0; row < 3; ++row) {
