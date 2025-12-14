@@ -5,6 +5,7 @@
 #include <Adafruit_NeoPixel.h>   // NeoPixel WS2812
 #include <LedControl.h>          // MAX7219
 #include <SoftwareSerial.h>      // <-- THÊM DÒNG NÀY
+#include <Preferences.h>
 
 // ======================
 // Cấu hình chân
@@ -60,7 +61,10 @@ enum MenuLevel {
   LEVEL_BT_SUB,
   LEVEL_MATRIX_SUB,
   LEVEL_I2C_OLED_SUB,
-  LEVEL_RS485_SUB        // submenu cho Sensor RS485
+  LEVEL_RS485_SUB,        // submenu cho Sensor RS485
+  LEVEL_SETTINGS_MENU,       // Menu Settings (ẩn)
+  LEVEL_SETTINGS_BUZZER_EDIT // chỉnh thời gian buzzer
+
 };
 
 enum AppState {
@@ -80,8 +84,8 @@ enum AppState {
   STATE_TM1637,           // 4x7 Segment TM1637
   STATE_PCA9685_TEST,
   STATE_MAX6675,
-  STATE_I2C_DHT20_AHT20
-
+  STATE_I2C_DHT20_AHT20,
+  STATE_I2C_MPU6050
 };
 
 // ======================
@@ -116,9 +120,30 @@ const char* const i2cSubMenuItems[] = {
   "OLED IIC",
   "AM2315C",
   "DHT20_AHT20",
+  "MPU6050",
   "<-- Back"
 };
+
 const int I2C_MENU_COUNT = sizeof(i2cSubMenuItems) / sizeof(i2cSubMenuItems[0]);
+// ======================
+// SETTINGS (Menu ẩn)
+// ======================
+const char* const settingsMenuItems[] = {
+  "Set Buzzer",
+  "Back to Menu Test"
+};
+const int SETTINGS_MENU_COUNT = sizeof(settingsMenuItems) / sizeof(settingsMenuItems[0]);
+
+int currentSettingsIndex = 0;
+
+// Lưu/đọc thời gian countdown (buzzer kêu khi về 0)
+// Range: 3..10 phút, step 30s
+Preferences prefs;
+static const char* PREF_NS       = "hs03";
+static const char* PREF_KEY_CD_S = "cdSec";
+
+uint16_t settingsCountdownSec = 180;     // giá trị đang chỉnh trong Settings
+bool settingsSavedHeaderEnabled = true;  // để restore headerEnabled
 
 const char* const btSubMenuItems[] = {
   "1. JDY-33",
@@ -192,10 +217,10 @@ char headerLabel[16] = "";
 bool headerEnabled = true;
 
 // Countdown 120s + buzzer 10s
-const uint16_t       COUNTDOWN_SECONDS     = 180;
+uint16_t             COUNTDOWN_SECONDS     = 180;   // sẽ nạp từ NVS
 const unsigned long  BUZZER_DURATION       = 10000UL;
 unsigned long        countdownStartMillis  = 0;
-int                  countdownRemaining    = COUNTDOWN_SECONDS;
+int                  countdownRemaining    = 180;   // setup() sẽ set lại đúng
 bool                 countdownFinished     = false;
 
 bool                 buzzerActive          = false;
@@ -225,6 +250,17 @@ void drawRS485Header(uint8_t funcIndex);
 void drawI2COLEDHeader(uint8_t funcIndex);
 void printBTSubMenuItem();
 void drawBTHeader(uint8_t funcIndex);    // <-- THÊM DÒNG NÀY
+
+void enterSettingsMenu();
+void exitSettingsMenuToMain();
+void printSettingsMenuItem();
+void printSettingsBuzzerEdit();
+
+uint16_t normalizeCountdownSec(uint16_t sec);
+void loadCountdownSetting();
+void saveCountdownSetting(uint16_t sec);
+void restartCountdownNow(unsigned long now);
+
 // Kéo các file header
 #include "Display.h"
 #include "CountdownBuzzer.h"
@@ -251,7 +287,7 @@ void drawBTHeader(uint8_t funcIndex);    // <-- THÊM DÒNG NÀY
 #include "RS485AGH3485Mode.h" // mode đọc AGH3485 (ASAIR) RS485
 #include "AM2315CMode.h"
 #include "DHT20AHT20Mode.h"
-
+#include "MPU6050Mode.h"
 // Định nghĩa object MAX6675 dùng chung cho mode
 MAX6675 max6675(MAX6675_CLK_PIN, MAX6675_CS_PIN, MAX6675_DO_PIN);
 
@@ -362,9 +398,11 @@ void setup() {
   }
 
   // Khởi động countdown
-  countdownStartMillis = millis();
-  countdownRemaining   = COUNTDOWN_SECONDS;
-  countdownFinished    = false;
+  // Nạp thời gian countdown từ NVS (3..10 phút, step 30s)
+  loadCountdownSetting();
+  // Khởi động countdown theo giá trị đã nạp
+  restartCountdownNow(millis());
+
 
   // Về menu chính
   lcd.clear();
@@ -431,12 +469,15 @@ void loop() {
     case STATE_I2C_SCAN:
       updateI2CScanMode(now);
       break;
+
     case STATE_I2C_AM2315C:       
       updateAM2315CMode(now);
       break;
+
     case STATE_I2C_DHT20_AHT20:
       updateDHT20AHT20Mode(now);
       break;
+
     case STATE_NEOPIXEL:
       updateNeoPixelMode(now);
       break;
@@ -469,6 +510,10 @@ void loop() {
       updatePCA9685TestMode(now);
       break;
 
+    case STATE_I2C_MPU6050:
+      updateMPU6050Mode(now);
+      break;
+
     default:
       break;
   }
@@ -486,16 +531,68 @@ void loop() {
   }
 
   // Đọc nút nhấn
-  int btnState = digitalRead(ENCODER_SW_PIN);
-  if (btnState != lastBtnState) {
-    if ((now - lastBtnTime) > BTN_DEBOUNCE) {
-      if (lastBtnState == HIGH && btnState == LOW) {
+// =====================================================
+// Đọc nút nhấn Encoder (click + long-press 10s vào Settings)
+// - Long press 10s CHỈ áp dụng ở MENU CHÍNH (STATE_MENU + LEVEL_MAIN)
+// - Ở mọi tính năng khác: click xử lý NGAY khi nhấn xuống (giữ nguyên hành vi cũ)
+// =====================================================
+int btnState = digitalRead(ENCODER_SW_PIN);
+
+// biến phục vụ long-press (chỉ dùng ở menu chính)
+static bool          holdActive  = false;
+static bool          holdFired   = false;
+static unsigned long holdStartMs = 0;
+
+// Nếu đang hold mà rời khỏi menu chính thì hủy hold (tránh kẹt trạng thái)
+if (holdActive && !(appState == STATE_MENU && currentLevel == LEVEL_MAIN)) {
+  holdActive = false;
+  holdFired  = false;
+}
+
+// Debounce theo cạnh
+if (btnState != lastBtnState) {
+  if ((now - lastBtnTime) > BTN_DEBOUNCE) {
+
+    // Cạnh nhấn xuống
+    if (lastBtnState == HIGH && btnState == LOW) {
+      if (appState == STATE_MENU && currentLevel == LEVEL_MAIN) {
+        // Ở menu chính: không click ngay, chờ thả để click / hoặc đủ 10s để vào Settings
+        holdActive  = true;
+        holdFired   = false;
+        holdStartMs = now;
+      } else {
+        // Ở mọi tính năng khác: click NGAY khi nhấn xuống (giữ nguyên hành vi cũ)
         onButtonClick();
       }
-      lastBtnTime = now;
     }
+
+    // Cạnh nhả ra
+    if (lastBtnState == LOW && btnState == HIGH) {
+      // Nếu đang hold ở menu chính và chưa kích hoạt Settings -> coi là 1 click bình thường
+      if (holdActive) {
+        if (!holdFired) {
+          onButtonClick();
+        }
+        holdActive = false;
+        holdFired  = false;
+      }
+    }
+
+    lastBtnTime  = now;
     lastBtnState = btnState;
   }
+}
+
+// Long press check (chỉ ở menu chính)
+if (holdActive && !holdFired &&
+    appState == STATE_MENU && currentLevel == LEVEL_MAIN &&
+    btnState == LOW &&
+    (now - holdStartMs) >= 10000UL) {
+
+  holdFired = true;
+  enterSettingsMenu();   // hàm bạn đã thêm cho Menu Settings
+  // Không gọi onButtonClick ở đây, để tránh "click" ngay khi nhả nút
+}
 
   // ------------------------------
   // ĐẢM BẢO HEADER LED MATRIX & RS485 LUÔN ĐÚNG
@@ -594,6 +691,23 @@ void onEncoderTurn(int direction) {
     return;
   }
 
+  // ===== SETTINGS MENU (không dùng tăng tốc bước nhảy) =====
+  if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_MENU) {
+    currentSettingsIndex += direction;
+    if (currentSettingsIndex < 0) currentSettingsIndex = SETTINGS_MENU_COUNT - 1;
+    if (currentSettingsIndex >= SETTINGS_MENU_COUNT) currentSettingsIndex = 0;
+    printSettingsMenuItem();
+    return;
+  }
+
+  if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
+    int32_t v = (int32_t)settingsCountdownSec + (int32_t)direction * 30; // step 30s
+    if (v < 0) v = 0;
+    settingsCountdownSec = normalizeCountdownSec((uint16_t)v);
+    printSettingsBuzzerEdit();
+    return;
+  }
+
   // Chỉ cho phép xoay khi ở MENU (con trỏ menu)
   if (appState != STATE_MENU) return;
 
@@ -660,6 +774,35 @@ void onEncoderTurn(int direction) {
 // ======================
 void onButtonClick() {
   unsigned long now = millis();
+  // ======================
+  // MENU SETTINGS (ẩn)
+  // ======================
+  if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_MENU) {
+    if (currentSettingsIndex == 0) {
+      // vào chỉnh Set Buzzer
+      currentLevel = LEVEL_SETTINGS_BUZZER_EDIT;
+      settingsCountdownSec = normalizeCountdownSec(COUNTDOWN_SECONDS);
+      printSettingsBuzzerEdit();
+    } else {
+      // Back to Menu Test
+      exitSettingsMenuToMain();
+    }
+    return;
+  }
+
+  if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
+    // nhấn để LƯU
+    COUNTDOWN_SECONDS = normalizeCountdownSec(settingsCountdownSec);
+    saveCountdownSetting(COUNTDOWN_SECONDS);
+
+    // áp dụng ngay (reset countdown + tắt còi nếu đang kêu)
+    restartCountdownNow(now);
+
+    // quay về Menu Settings
+    currentLevel = LEVEL_SETTINGS_MENU;
+    printSettingsMenuItem();
+    return;
+  }
 
   // Đang ở TM1637 -> nhấn 1 lần để thoát về MENU
   if (appState == STATE_TM1637) {
@@ -722,6 +865,14 @@ void onButtonClick() {
     stopTrafficLedMode();
     appState = STATE_MENU;
     printMainMenuItem();
+    return;
+  }
+  
+  if (appState == STATE_I2C_MPU6050) {
+    stopMPU6050Mode();
+    appState     = STATE_MENU;
+    currentLevel = LEVEL_I2C_SUB;
+    printI2CSubMenuItem();
     return;
   }
 
@@ -1039,7 +1190,15 @@ void onButtonClick() {
         startDHT20AHT20Mode();
       } break;
 
-      case 5: // <-- Back
+      case 5: { // MPU6050
+        appState = STATE_I2C_MPU6050;
+        strncpy(headerLabel, "MPU6050", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        // KHÔNG updateHeaderRow để không ghi đè dòng 0 (mode tự hiển thị)
+        startMPU6050Mode();
+      } break;
+
+      case 6: // <-- Back
         currentLevel = LEVEL_MAIN;
         strncpy(headerLabel, "Menu", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
@@ -1244,3 +1403,92 @@ void printBTSubMenuItem() {
   lcdPrintLine(3, "Xoay de doi muc");
 }
 
+// ======================
+// SETTINGS HELPERS
+// ======================
+uint16_t normalizeCountdownSec(uint16_t sec) {
+  if (sec < 180) sec = 180;
+  if (sec > 600) sec = 600;
+
+  // làm tròn về step 30s
+  sec = (uint16_t)(((sec + 15) / 30) * 30);
+
+  if (sec < 180) sec = 180;
+  if (sec > 600) sec = 600;
+  return sec;
+}
+
+void loadCountdownSetting() {
+  prefs.begin(PREF_NS, true);
+  uint16_t v = prefs.getUShort(PREF_KEY_CD_S, 180);
+  prefs.end();
+
+  COUNTDOWN_SECONDS = normalizeCountdownSec(v);
+}
+
+void saveCountdownSetting(uint16_t sec) {
+  sec = normalizeCountdownSec(sec);
+  prefs.begin(PREF_NS, false);
+  prefs.putUShort(PREF_KEY_CD_S, sec);
+  prefs.end();
+}
+
+void restartCountdownNow(unsigned long now) {
+  countdownStartMillis = now;
+  countdownRemaining   = (int)COUNTDOWN_SECONDS;
+  countdownFinished    = false;
+
+  buzzerActive           = false;
+  buzzerState            = false;
+  lastBuzzerToggleMillis = now;
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
+void printSettingsMenuItem() {
+  lcd.clear();
+  lcdPrintLine(0, "   Menu Settings   ");
+  lcdPrintLine(1, (currentSettingsIndex == 0) ? ">Set Buzzer" : " Set Buzzer");
+  lcdPrintLine(2, (currentSettingsIndex == 1) ? ">Back to Menu Test" : " Back to Menu Test");
+  lcdPrintLine(3, "Nhan nut de chon");
+}
+
+static void fmtMMSS(char* out, size_t outsz, uint16_t sec) {
+  uint16_t m = sec / 60;
+  uint16_t s = sec % 60;
+  snprintf(out, outsz, "%02u:%02u", (unsigned)m, (unsigned)s);
+}
+
+void printSettingsBuzzerEdit() {
+  lcd.clear();
+  lcdPrintLine(0, "Set Buzzer");
+  char mmss[6];
+  fmtMMSS(mmss, sizeof(mmss), settingsCountdownSec);
+
+  char l1[21];
+  snprintf(l1, sizeof(l1), "Time: %s", mmss);
+  lcdPrintLine(1, l1);
+
+  lcdPrintLine(2, "Xoay: +/- 30s");
+  lcdPrintLine(3, "Nhan nut de LUU");
+}
+
+void enterSettingsMenu() {
+  // khóa menu 16 mục: chuyển level sang Settings
+  settingsSavedHeaderEnabled = headerEnabled;
+  headerEnabled = false;
+
+  currentLevel = LEVEL_SETTINGS_MENU;
+  currentSettingsIndex = 0;
+  printSettingsMenuItem();
+}
+
+void exitSettingsMenuToMain() {
+  headerEnabled = settingsSavedHeaderEnabled;
+
+  appState     = STATE_MENU;
+  currentLevel = LEVEL_MAIN;
+
+  strncpy(headerLabel, "Menu", sizeof(headerLabel));
+  headerLabel[sizeof(headerLabel) - 1] = '\0';
+  printMainMenuItem();
+}
