@@ -16,6 +16,11 @@ void lcdPrintLine(uint8_t row, const char *text);
 // Hàm thoát về menu I2C (định nghĩa trong HS03_UI.ino)
 void exitPCA9685ToI2CMenu();
 
+// Pin nút encoder (đã define trong HS03_UI.ino)
+#ifndef ENCODER_SW_PIN
+#define ENCODER_SW_PIN 15
+#endif
+
 // Đối tượng PCA9685 dùng bus I2CScanBus, địa chỉ mặc định 0x40
 static Adafruit_PWMServoDriver pca9685(0x40, I2CScanBus);
 
@@ -27,10 +32,13 @@ static const uint16_t SERVO_MAX_US     = 2500; // ~2.5ms ~180°
 static int16_t pcaCurrentAngle = 90;   // góc hiện tại (0..180)
 static bool    pcaInitialized  = false;
 
-// Double-click detection
-static bool           pcaClickPending    = false;
-static unsigned long  pcaLastClickTime   = 0;
-static const unsigned long PCA_DOUBLE_MS = 400;  // ms
+// ===== Hold-to-center detection (GIỮ 3s -> về 90°) =====
+static bool          pcaBtnActive    = false;     // đang giữ nút trong mode
+static bool          pcaHoldFired    = false;     // đã reset 90° trong lần giữ này
+static unsigned long pcaBtnDownTime  = 0;
+static int           pcaPrevBtnState = HIGH;
+
+static const unsigned long PCA_HOLD_MS = 3000UL;  // giữ 3 giây
 
 // Đổi micro-giây sang tick 0..4095 của PCA9685
 static uint16_t pcaUsToTicks(uint16_t us) {
@@ -60,6 +68,15 @@ static void pcaWriteAllServos(int angle) {
   }
 }
 
+static void pcaCenterAllTo90() {
+  pcaCurrentAngle = 90;
+  pcaWriteAllServos(pcaCurrentAngle);
+
+  char buf[21];
+  snprintf(buf, sizeof(buf), "Goc servo: %3d deg", pcaCurrentAngle);
+  lcdPrintLine(2, buf);
+}
+
 // Khởi động mode Test PCA9685
 inline void startPCA9685TestMode() {
   if (!pcaInitialized) {
@@ -70,28 +87,55 @@ inline void startPCA9685TestMode() {
   }
 
   // Đưa tất cả servo về 90°
-  pcaCurrentAngle = 90;
-  pcaWriteAllServos(pcaCurrentAngle);
+  pcaCenterAllTo90();
 
-  // Reset trạng thái click
-  pcaClickPending  = false;
-  pcaLastClickTime = 0;
+  // Reset trạng thái giữ nút
+  pcaBtnActive    = false;
+  pcaHoldFired    = false;
+  pcaBtnDownTime  = 0;
+  pcaPrevBtnState = digitalRead(ENCODER_SW_PIN);
 
   // Hiển thị hướng dẫn
   lcdPrintLine(1, "PCA9685: 16 servo");
   lcdPrintLine(2, "Goc servo: 090 deg");
-  lcdPrintLine(3, "1Click:I2C  2Click:90");
+  lcdPrintLine(3, "1Click:I2C Hold3s:90");
 }
 
 // Được gọi trong loop() khi appState == STATE_PCA9685_TEST
 inline void updatePCA9685TestMode(unsigned long now) {
-  // Nếu có 1 lần nhấn mà quá thời gian double-click
-  // => xem như single-click => thoát về menu I2C
-  if (pcaClickPending && (now - pcaLastClickTime > PCA_DOUBLE_MS)) {
-    pcaClickPending = false;
-    exitPCA9685ToI2CMenu();   // về menu I2C
-    return;
+  int btnState = digitalRead(ENCODER_SW_PIN);
+
+  // Nếu vì lý do nào đó không nhận "button down" từ onButtonClick()
+  // thì vẫn bắt cạnh nhấn xuống ở đây để chắc chắn hoạt động
+  if (pcaPrevBtnState == HIGH && btnState == LOW) {
+    pcaBtnActive   = true;
+    pcaHoldFired   = false;
+    pcaBtnDownTime = now;
   }
+
+  // Khi đang giữ: đủ 3s => về 90° (chỉ bắn 1 lần)
+  if (pcaBtnActive && !pcaHoldFired && btnState == LOW) {
+    if (now - pcaBtnDownTime >= PCA_HOLD_MS) {
+      pcaHoldFired = true;
+      pcaCenterAllTo90();
+      // giữ nút tiếp cũng không thoát, chỉ reset 1 lần
+    }
+  }
+
+  // Khi nhả nút:
+  // - nếu chưa bắn hold (chưa đủ 3s) => coi như click ngắn => thoát menu I2C
+  if (pcaPrevBtnState == LOW && btnState == HIGH) {
+    if (pcaBtnActive && !pcaHoldFired) {
+      pcaBtnActive = false;
+      exitPCA9685ToI2CMenu();
+      pcaPrevBtnState = btnState;
+      return;
+    }
+    // nếu đã hold->90 thì nhả ra không thoát
+    pcaBtnActive = false;
+  }
+
+  pcaPrevBtnState = btnState;
 }
 
 // Khi thoát mode -> tắt toàn bộ xung servo
@@ -119,27 +163,13 @@ inline void pca9685OnEncoderTurn(int direction) {
 }
 
 // Gọi từ onButtonClick() khi appState == STATE_PCA9685_TEST
-// - Click thứ 1: set pending, chờ coi có click thứ 2 không
-// - Click thứ 2 trong khoảng PCA_DOUBLE_MS => double-click -> reset 90°
-// - Nếu không có click thứ 2 => trong updatePCA9685TestMode() sẽ xử lý single-click -> thoát I2C
+// Lưu ý: HS03_UI gọi onButtonClick ở cạnh nhấn xuống.
+// Ta chỉ "arm" việc giữ nút ở đây; phần click ngắn / hold được xử lý trong updatePCA9685TestMode().
 inline void pcaOnRawButtonClick() {
   unsigned long now = millis();
-
-  if (pcaClickPending && (now - pcaLastClickTime <= PCA_DOUBLE_MS)) {
-    // Double-click: reset về 90°
-    pcaClickPending = false;
-
-    pcaCurrentAngle = 90;
-    pcaWriteAllServos(pcaCurrentAngle);
-
-    char buf[21];
-    snprintf(buf, sizeof(buf), "Goc servo: %3d deg", pcaCurrentAngle);
-    lcdPrintLine(2, buf);
-  } else {
-    // Lần click đầu tiên -> chờ thêm trong PCA_DOUBLE_MS
-    pcaClickPending  = true;
-    pcaLastClickTime = now;
-  }
+  pcaBtnActive   = true;
+  pcaHoldFired   = false;
+  pcaBtnDownTime = now;
 }
 
 #endif // PCA9685_TEST_MODE_H
