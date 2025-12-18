@@ -36,6 +36,15 @@ void updateHeaderRow() {
   if (!headerEnabled) {
     return;
   }
+    // ===== Fix: DFRobot submenu dùng header riêng, không để header MENU ghi đè =====
+  if (currentLevel == LEVEL_DFROBOT_SUB) {
+    char h[21];
+    snprintf(h, sizeof(h), "DFRobot %d/%d  %3ds",
+             currentDFRobotIndex + 1, DFROBOT_MENU_COUNT, countdownRemaining);
+    lcdPrintLine(0, h);
+    return;
+  }
+
   char line[21];
 
   if (appState == STATE_MENU) {
@@ -137,6 +146,26 @@ void printI2CSubMenuItem() {
     // Ghi ra LCD ở dòng 1,2,3
     lcdPrintLine(1 + row, buf);
   }
+}
+
+// DFRobot submenu extern
+extern int currentDFRobotIndex;
+extern const int DFROBOT_MENU_COUNT;
+extern int countdownRemaining;
+
+inline void printDFRobotSubMenuItem() {
+  lcd.clear();
+
+  // ===== Line 0: "DFRobot  x/y  zzzs" =====
+  char header[21];
+  snprintf(header, sizeof(header), "DFRobot %d/%d  %3ds",
+           currentDFRobotIndex + 1, DFROBOT_MENU_COUNT, countdownRemaining);
+  lcdPrintLine(0, header);
+
+  // ===== 3 items =====
+  lcdPrintLine(1, (currentDFRobotIndex == 0) ? ">DFRobotAnalog"    : " DFRobotAnalog");
+  lcdPrintLine(2, (currentDFRobotIndex == 1) ? ">URM37 Ultrasonic" : " URM37 Ultrasonic");
+  lcdPrintLine(3, (currentDFRobotIndex == 2) ? "><-- Back"         : " <-- Back");
 }
 
 

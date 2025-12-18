@@ -21,7 +21,7 @@ void lcdPrintLine(uint8_t row, const char *text);
 // ==============================
 static bool  dfFilterInit      = false;
 static float dfFilteredRaw[4]  = {0, 0, 0, 0};
-static const float DF_FILTER_ALPHA = 0.15f;
+static const float DF_FILTER_ALPHA = 0.5f;
 
 // ==============================
 //  BẮT ĐẦU MODE DFRobot Analog

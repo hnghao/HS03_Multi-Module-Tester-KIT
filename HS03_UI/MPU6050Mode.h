@@ -158,7 +158,7 @@ inline void updateMPU6050Mode(uint32_t now) {
 
       if (findAndStartMPU()) {
         char l3[21];
-        snprintf(l3, sizeof(l3), "MPU OK 0x%02X WHO%02X", mpuAddr, whoami);
+        snprintf(l3, sizeof(l3), "MPU OK 0x%02X ADR%02X", mpuAddr, whoami);
 
         lcdPrintLine(0, "ESP32-S3  MPU6DOF");
         lcdPrintLine(1, "Reading data...  ");
@@ -193,7 +193,7 @@ inline void updateMPU6050Mode(uint32_t now) {
   int16_t ax = (int16_t)((raw[0] << 8) | raw[1]);
   int16_t ay = (int16_t)((raw[2] << 8) | raw[3]);
   int16_t az = (int16_t)((raw[4] << 8) | raw[5]);
-  int16_t tempRaw = (int16_t)((raw[6] << 8) | raw[7]);
+  // int16_t tempRaw = (int16_t)((raw[6] << 8) | raw[7]);
   int16_t gx = (int16_t)((raw[8] << 8) | raw[9]);
   int16_t gy = (int16_t)((raw[10] << 8) | raw[11]);
   int16_t gz = (int16_t)((raw[12] << 8) | raw[13]);
@@ -210,7 +210,7 @@ inline void updateMPU6050Mode(uint32_t now) {
   float gy_dps = gy * dps_per_lsb;
   float gz_dps = gz * dps_per_lsb;
 
-  float tempC = (tempRaw / 340.0f) + 36.53f;
+  // float tempC = (tempRaw / 340.0f) + 36.53f;
 
   // ==== Build 4 lines exactly fitting 20 cols (GIỮ NGUYÊN FORMAT) ====
   char sax[8], say[8], saz[8];
@@ -225,14 +225,16 @@ inline void updateMPU6050Mode(uint32_t now) {
   fmtSigned(sgy, sizeof(sgy), gy_dps, 5, 1);
   fmtSigned(sgz, sizeof(sgz), gz_dps, 5, 1);
 
-  dtostrf(tempC, 5, 2, st); // "25.00"
+  // dtostrf(tempC, 5, 2, st); // "25.00"
 
   char line0[21], line1[21], line2[21], line3[21];
 
   snprintf(line0, sizeof(line0), "AX:%s AY:%s", sax, say);
-  snprintf(line1, sizeof(line1), "AZ:%s T:%sC",  saz, st);
+  // snprintf(line1, sizeof(line1), "AZ:%s T:%sC",  saz, st);
+  // Không còn T -> dòng 1 chỉ hiển thị AZ
+  snprintf(line1, sizeof(line1), "AZ:%s           ", saz);
   snprintf(line2, sizeof(line2), "GX:%s GY:%s",   sgx, sgy);
-  snprintf(line3, sizeof(line3), "GZ:%s WHO:0x%02X", sgz, mpuAddr);
+  snprintf(line3, sizeof(line3), "GZ:%s ADR:0x%02X", sgz, mpuAddr);
 
   lcdPrintLine(0, line0);
   lcdPrintLine(1, line1);

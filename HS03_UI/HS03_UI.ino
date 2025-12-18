@@ -63,8 +63,9 @@ enum MenuLevel {
   LEVEL_I2C_OLED_SUB,
   LEVEL_RS485_SUB,        // submenu cho Sensor RS485
   LEVEL_SETTINGS_MENU,       // Menu Settings (ẩn)
-  LEVEL_SETTINGS_BUZZER_EDIT // chỉnh thời gian buzzer
-
+  LEVEL_SETTINGS_BUZZER_EDIT, // chỉnh thời gian buzzer
+  LEVEL_SETTINGS_ABOUT,
+  LEVEL_DFROBOT_SUB
 };
 
 enum AppState {
@@ -85,7 +86,9 @@ enum AppState {
   STATE_PCA9685_TEST,
   STATE_MAX6675,
   STATE_I2C_DHT20_AHT20,
-  STATE_I2C_MPU6050
+  STATE_I2C_MPU6050,
+  STATE_DFROBOT_URM37,
+  STATE_I2C_AGR12
 };
 
 // ======================
@@ -121,6 +124,7 @@ const char* const i2cSubMenuItems[] = {
   "AM2315C",
   "DHT20_AHT20",
   "MPU6050",
+  "AGR12",
   "<-- Back"
 };
 
@@ -130,8 +134,10 @@ const int I2C_MENU_COUNT = sizeof(i2cSubMenuItems) / sizeof(i2cSubMenuItems[0]);
 // ======================
 const char* const settingsMenuItems[] = {
   "Set Buzzer",
-  "Back to Menu Test"
+  "Back to Menu Test",
+  "About"
 };
+
 const int SETTINGS_MENU_COUNT = sizeof(settingsMenuItems) / sizeof(settingsMenuItems[0]);
 
 int currentSettingsIndex = 0;
@@ -180,6 +186,15 @@ const char* const rs485SubMenuItems[] = {
 
 const int RS485_MENU_COUNT = sizeof(rs485SubMenuItems) / sizeof(rs485SubMenuItems[0]);
 
+// ===== DFRobot feature (menu con cho mục 16) =====
+const char* const dfrobotSubMenuItems[] = {
+  "DFRobotAnalog",
+  "URM37 Ultrasonic",
+  "<-- Back"
+};
+const int DFROBOT_MENU_COUNT = sizeof(dfrobotSubMenuItems) / sizeof(dfrobotSubMenuItems[0]);
+
+
 // ======================
 // Biến toàn cục
 // ======================
@@ -203,6 +218,7 @@ int currentI2COLEDIndex = 0;   // index cho submenu OLED IIC
 int currentMatrixIndex = 0;    // index cho sub-menu Led Matrix
 int currentRS485Index  = 0;    // index cho sub-menu RS485
 int currentBTIndex     = 0;    // index cho submenu Bluetooth
+int currentDFRobotIndex = 0;
 
 int  lastClkState     = HIGH;
 bool lastBtnState     = HIGH;
@@ -230,10 +246,10 @@ unsigned long        lastBuzzerToggleMillis = 0;
 const unsigned long  BUZZER_TOGGLE_INTERVAL = 200;
 
 // Thời gian cập nhật cho Analog & DFRobot
-const unsigned long  ANALOG_UPDATE_INTERVAL   = 200;
+const unsigned long  ANALOG_UPDATE_INTERVAL   = 500;
 unsigned long        lastAnalogUpdate         = 0;
 
-const unsigned long  DFROBOT_UPDATE_INTERVAL  = 300;
+const unsigned long  DFROBOT_UPDATE_INTERVAL  = 500;
 unsigned long        lastDFRobotUpdate        = 0;
 
 // ======================
@@ -255,6 +271,7 @@ void enterSettingsMenu();
 void exitSettingsMenuToMain();
 void printSettingsMenuItem();
 void printSettingsBuzzerEdit();
+void printSettingsAbout();
 
 uint16_t normalizeCountdownSec(uint16_t sec);
 void loadCountdownSetting();
@@ -288,6 +305,9 @@ void restartCountdownNow(unsigned long now);
 #include "AM2315CMode.h"
 #include "DHT20AHT20Mode.h"
 #include "MPU6050Mode.h"
+#include "URM37Mode.h"
+#include "AGR12Mode.h"
+
 // Định nghĩa object MAX6675 dùng chung cho mode
 MAX6675 max6675(MAX6675_CLK_PIN, MAX6675_CS_PIN, MAX6675_DO_PIN);
 
@@ -458,8 +478,16 @@ void loop() {
       updateAnalogMode(now);
       break;
 
+    case STATE_I2C_AGR12:
+      updateAGR12Mode((uint32_t)now);
+      break;
+
     case STATE_DFROBOT_ANALOG:
       updateDFRobotAnalogMode(now);
+      break;
+
+    case STATE_DFROBOT_URM37:
+      updateURM37Mode(now);
       break;
 
     case STATE_TRAFFIC_LED:
@@ -708,6 +736,14 @@ void onEncoderTurn(int direction) {
     return;
   }
 
+  if (appState == STATE_MENU && currentLevel == LEVEL_DFROBOT_SUB) {
+  currentDFRobotIndex += direction;
+  if (currentDFRobotIndex < 0) currentDFRobotIndex = DFROBOT_MENU_COUNT - 1;
+  if (currentDFRobotIndex >= DFROBOT_MENU_COUNT) currentDFRobotIndex = 0;
+  printDFRobotSubMenuItem();
+  return;
+  }
+
   // Chỉ cho phép xoay khi ở MENU (con trỏ menu)
   if (appState != STATE_MENU) return;
 
@@ -741,6 +777,12 @@ void onEncoderTurn(int direction) {
     if (currentI2CIndex < 0) currentI2CIndex = I2C_MENU_COUNT - 1;
     if (currentI2CIndex >= I2C_MENU_COUNT) currentI2CIndex = 0;
     printI2CSubMenuItem();
+    
+  } else if (currentLevel == LEVEL_DFROBOT_SUB) {
+  currentDFRobotIndex += delta;
+  if (currentDFRobotIndex < 0) currentDFRobotIndex = DFROBOT_MENU_COUNT - 1;
+  if (currentDFRobotIndex >= DFROBOT_MENU_COUNT) currentDFRobotIndex = 0;
+  printDFRobotSubMenuItem();
 
   } else if (currentLevel == LEVEL_BT_SUB) {
     currentBTIndex += delta;
@@ -774,6 +816,46 @@ void onEncoderTurn(int direction) {
 // ======================
 void onButtonClick() {
   unsigned long now = millis();
+
+  if (appState == STATE_I2C_AGR12) {
+    stopAGR12Mode();
+    appState     = STATE_MENU;
+    currentLevel = LEVEL_I2C_SUB;
+    printI2CSubMenuItem();
+    return;
+  }
+
+  if (appState == STATE_DFROBOT_URM37) {
+  stopURM37Mode();
+  appState = STATE_MENU;
+  currentLevel = LEVEL_DFROBOT_SUB;
+  currentDFRobotIndex = 1;
+  printDFRobotSubMenuItem();
+  return;
+  }
+
+
+if (appState == STATE_MENU && currentLevel == LEVEL_DFROBOT_SUB) {
+  switch (currentDFRobotIndex) {
+    case 0: // DFRobotAnalog (giữ nguyên mode cũ)
+      startDFRobotAnalogMode();
+      break;
+
+    case 1: // URM37
+      appState = STATE_DFROBOT_URM37;
+      startURM37Mode();
+      break;
+
+    case 2: // Back -> về menu 16 mục
+      currentLevel = LEVEL_MAIN;
+      currentMainIndex = 15; // đứng đúng mục DFRobot
+      printMainMenuItem();
+      break;
+  }
+  return;
+}
+
+
   // ======================
   // MENU SETTINGS (ẩn)
   // ======================
@@ -783,10 +865,23 @@ void onButtonClick() {
       currentLevel = LEVEL_SETTINGS_BUZZER_EDIT;
       settingsCountdownSec = normalizeCountdownSec(COUNTDOWN_SECONDS);
       printSettingsBuzzerEdit();
-    } else {
+    } 
+    else if (currentSettingsIndex == 1) {
       // Back to Menu Test
       exitSettingsMenuToMain();
+    } 
+    else { 
+      // About
+      currentLevel = LEVEL_SETTINGS_ABOUT;
+      printSettingsAbout();
     }
+    return;
+  }
+
+  if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_ABOUT) {
+    // Nhấn nút -> quay lại Menu Settings
+    currentLevel = LEVEL_SETTINGS_MENU;
+    printSettingsMenuItem();
     return;
   }
 
@@ -830,10 +925,12 @@ void onButtonClick() {
   // Đang ở DFRobot Analog -> về MENU, đưa con trỏ về DFRobot
   if (appState == STATE_DFROBOT_ANALOG) {
     appState = STATE_MENU;
-    currentMainIndex = 15;   // DFRobot (mục 16)
-    printMainMenuItem();
+    currentLevel = LEVEL_DFROBOT_SUB;
+    currentDFRobotIndex = 0;
+    printDFRobotSubMenuItem();
     return;
   }
+
 
   // Đang ở I2C Scan -> về submenu I2C
   if (appState == STATE_I2C_SCAN) {
@@ -1142,9 +1239,11 @@ void onButtonClick() {
         printMainMenuItem();
       } break;
 
-      case 15: // DFRobot
-        startDFRobotAnalogMode();
-        break;
+      case 15: { // DFRobot
+        currentLevel = LEVEL_DFROBOT_SUB;
+        currentDFRobotIndex = 0;
+        printDFRobotSubMenuItem();
+      } break;
 
       default:
         // Grove, Maker... dùng màn hình mặc định
@@ -1198,12 +1297,19 @@ void onButtonClick() {
         startMPU6050Mode();
       } break;
 
-      case 6: // <-- Back
+      case 6: { // AGR12
+        appState = STATE_I2C_AGR12;
+        // không updateHeaderRow để giữ nguyên hiển thị line0 của AGR12
+        startAGR12Mode();
+      } break;
+
+      case 7: // <-- Back
         currentLevel = LEVEL_MAIN;
         strncpy(headerLabel, "Menu", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
         printMainMenuItem();
-        break;
+      break;
+
     }
   } else if (currentLevel == LEVEL_I2C_OLED_SUB) {
     // ===== SUB-MENU OLED IIC =====
@@ -1347,10 +1453,28 @@ void onButtonClick() {
         headerLabel[sizeof(headerLabel) - 1] = '\0';
         printMainMenuItem();
       } break;
-    }
+    } 
+  } else if (currentLevel == LEVEL_DFROBOT_SUB) {
+  switch (currentDFRobotIndex) {
+    case 0: // DFRobotAnalog
+      startDFRobotAnalogMode();
+      break;
+
+    case 1: // URM37 Ultrasonic
+      startURM37Mode();
+      break;
+
+    case 2: // <-- Back (về menu 16 mục)
+      currentLevel = LEVEL_MAIN;
+      currentMainIndex = 15; // đứng lại đúng mục DFRobot
+      strncpy(headerLabel, "Menu", sizeof(headerLabel));
+      headerLabel[sizeof(headerLabel) - 1] = '\0';
+      printMainMenuItem();
+      break;
+  }
+  return;
   }
 }
-
 
 // ======================
 // In sub-menu Led Matrix
@@ -1447,9 +1571,10 @@ void restartCountdownNow(unsigned long now) {
 void printSettingsMenuItem() {
   lcd.clear();
   lcdPrintLine(0, "   Menu Settings   ");
+
   lcdPrintLine(1, (currentSettingsIndex == 0) ? ">Set Buzzer" : " Set Buzzer");
   lcdPrintLine(2, (currentSettingsIndex == 1) ? ">Back to Menu Test" : " Back to Menu Test");
-  lcdPrintLine(3, "Nhan nut de chon");
+  lcdPrintLine(3, (currentSettingsIndex == 2) ? ">About" : " About");
 }
 
 static void fmtMMSS(char* out, size_t outsz, uint16_t sec) {
@@ -1491,4 +1616,12 @@ void exitSettingsMenuToMain() {
   strncpy(headerLabel, "Menu", sizeof(headerLabel));
   headerLabel[sizeof(headerLabel) - 1] = '\0';
   printMainMenuItem();
+}
+
+void printSettingsAbout() {
+  lcd.clear();
+  lcdPrintLine(0, "HS03 Multi Test Kit");
+  lcdPrintLine(1, "Trainer: hnghao");
+  lcdPrintLine(2, "Version: 1.0");
+  lcdPrintLine(3, "Base on ChatGPT");
 }

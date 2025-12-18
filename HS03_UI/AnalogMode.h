@@ -22,7 +22,7 @@ void lcdPrintLine(uint8_t row, const char *text);
 static bool  analogFilterInit      = false;
 static float analogFilteredRaw[4]  = {0, 0, 0, 0};   // lưu giá trị ADC đã lọc
 // alpha nhỏ -> mượt hơn, chậm hơn
-static const float ANALOG_FILTER_ALPHA = 0.15f;
+static const float ANALOG_FILTER_ALPHA = 0.5f;
 
 // ==============================
 //  BẮT ĐẦU MODE ANALOG
