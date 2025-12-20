@@ -69,6 +69,12 @@ inline void start2x7HC595Mode() {
   digitalWrite(PIN_SCLK, LOW);
   digitalWrite(PIN_LOAD, LOW);
 
+  // ===== Debounce nút Encoder để thoát mode =====
+  int lastRawBtn = digitalRead(ENCODER_SW_PIN);
+  int stableBtn = lastRawBtn;
+  int prevStableBtn = stableBtn;
+  uint32_t lastBounceMs = millis();
+
   // 3. Đợi nút encoder thả ra (tránh dính lần nhấn trước đó ở MENU)
   while (digitalRead(ENCODER_SW_PIN) == LOW) {
     delay(10);
@@ -108,13 +114,25 @@ inline void start2x7HC595Mode() {
     updateCountdown(now);
     handleBuzzer(now);
 
-    // 5.1. Nhấn nút encoder -> thoát mode
-    if (digitalRead(ENCODER_SW_PIN) == LOW) {
-      // debounce nhỏ để tránh lặp
-      while (digitalRead(ENCODER_SW_PIN) == LOW) {
-        delay(10);
+    // 5.1. Click nút encoder -> thoát mode (debounce ổn định, bắt theo NHẢ)
+    // Lý do: tránh trường hợp nhấn nhanh bị "miss" hoặc phải giữ nút.
+    static const uint32_t BTN_STABLE_MS = 25;
+
+    int rawBtn = digitalRead(ENCODER_SW_PIN);
+
+    if (rawBtn != lastRawBtn) {
+      lastRawBtn   = rawBtn;
+      lastBounceMs = now;
+    }
+
+    if ((uint32_t)(now - lastBounceMs) >= BTN_STABLE_MS && stableBtn != lastRawBtn) {
+      prevStableBtn = stableBtn;
+      stableBtn     = lastRawBtn;
+
+      // phát hiện click khi NHẢ nút (LOW -> HIGH)
+      if (prevStableBtn == LOW && stableBtn == HIGH) {
+        break;
       }
-      break;
     }
 
     // 5.2. Cập nhật DP: sau mỗi 1s đổi trạng thái (chớp tắt)

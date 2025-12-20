@@ -147,6 +147,10 @@ int currentSettingsIndex = 0;
 Preferences prefs;
 static const char* PREF_NS       = "hs03";
 static const char* PREF_KEY_CD_S = "cdSec";
+static const char* PREF_KEY_BUZZ_EN = "buzzEn";
+
+bool buzzerEnabled = true;         // giá trị đang dùng khi chạy
+bool settingsBuzzerEnabled = true; // giá trị đang chỉnh trong Set Buzzer
 
 uint16_t settingsCountdownSec = 180;     // giá trị đang chỉnh trong Settings
 bool settingsSavedHeaderEnabled = true;  // để restore headerEnabled
@@ -227,6 +231,69 @@ unsigned long lastEncoderTime = 0;
 const unsigned long BTN_DEBOUNCE      = 200; // ms
 const unsigned long ENCODER_DEBOUNCE  = 1;   // ms
 
+// ======================
+// ENCODER ISR (ESP32-S3) - decode quadrature chính xác, bắt kịp xoay nhanh
+// - encoderTicks: đếm theo cạnh (thường 4 ticks ~ 1 nấc tuỳ encoder)
+// - fetchEncoderDetents(): lấy số nấc kể từ lần trước (có giữ dư để không mất xung)
+// ======================
+static portMUX_TYPE encoderMux = portMUX_INITIALIZER_UNLOCKED;
+volatile int32_t encoderTicks = 0;     // +/- ticks (edge)
+volatile uint8_t encoderPrevAB = 0;
+
+// Bảng chuyển trạng thái Gray code (AB) -> delta
+// Index = (prevAB<<2) | newAB
+static const int8_t ENC_TABLE[16] = {
+  0, -1, +1, 0,
+  +1, 0, 0, -1,
+  -1, 0, 0, +1,
+  0, +1, -1, 0
+};
+
+void IRAM_ATTR encoderISR() {
+  uint8_t a = (uint8_t)digitalRead(ENCODER_CLK_PIN);
+  uint8_t b = (uint8_t)digitalRead(ENCODER_DT_PIN);
+  uint8_t ab = (a << 1) | b;
+  uint8_t idx = (encoderPrevAB << 2) | ab;
+  int8_t d = ENC_TABLE[idx];
+  encoderPrevAB = ab;
+
+  if (d) {
+    portENTER_CRITICAL_ISR(&encoderMux);
+    encoderTicks += d;
+    portEXIT_CRITICAL_ISR(&encoderMux);
+  }
+}
+
+// Trả về số "nấc" encoder kể từ lần gọi trước (đã gom theo ticks)
+static int32_t fetchEncoderDetents() {
+  int32_t ticks;
+  portENTER_CRITICAL(&encoderMux);
+  ticks = encoderTicks;
+  encoderTicks = 0;
+  portEXIT_CRITICAL(&encoderMux);
+
+  // Giữ dư để không mất xung khi ticks chưa đủ 4
+  static int32_t rem = 0;
+  ticks += rem;
+
+  // Thường 4 ticks = 1 nấc.
+  // Nếu encoder của bạn là 2 ticks/nấc, đổi 4 -> 2 ở đây:
+  const int32_t TICKS_PER_DETENT = 4;
+
+  int32_t det = ticks / TICKS_PER_DETENT;
+  rem = ticks - det * TICKS_PER_DETENT;
+  return det;
+}
+
+// Wrap index an toàn khi delta lớn (xoay nhanh)
+static inline int wrapIndex(int idx, int count) {
+  if (count <= 0) return 0;
+  idx %= count;
+  if (idx < 0) idx += count;
+  return idx;
+}
+
+//================================================
 char headerLabel[16] = "";
 
 // Cờ bật/tắt vẽ header dòng 0
@@ -277,6 +344,8 @@ uint16_t normalizeCountdownSec(uint16_t sec);
 void loadCountdownSetting();
 void saveCountdownSetting(uint16_t sec);
 void restartCountdownNow(unsigned long now);
+void loadBuzzerSetting();
+void saveBuzzerSetting(bool en);
 
 // Kéo các file header
 #include "Display.h"
@@ -410,7 +479,11 @@ void setup() {
 
   lastClkState = digitalRead(ENCODER_CLK_PIN);
   lastBtnState = digitalRead(ENCODER_SW_PIN);
-
+  // Bắt encoder bằng ISR để không mất xung khi xoay nhanh
+  encoderPrevAB = ((uint8_t)digitalRead(ENCODER_CLK_PIN) << 1) | (uint8_t)digitalRead(ENCODER_DT_PIN);
+  attachInterrupt(digitalPinToInterrupt(ENCODER_CLK_PIN), encoderISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENCODER_DT_PIN), encoderISR, CHANGE);
+  //============================================
   // ADS1115 trên I2CScanBus (SDA=1, SCL=2)
   ads1115_ok = ads1115.begin(ADS1115_I2C_ADDR, &I2CScanBus);
   if (ads1115_ok) {
@@ -420,6 +493,7 @@ void setup() {
   // Khởi động countdown
   // Nạp thời gian countdown từ NVS (3..10 phút, step 30s)
   loadCountdownSetting();
+  loadBuzzerSetting();
   // Khởi động countdown theo giá trị đã nạp
   restartCountdownNow(millis());
 
@@ -546,81 +620,84 @@ void loop() {
       break;
   }
 
-  // Đọc xoay encoder (CLK)
-  int clkState = digitalRead(ENCODER_CLK_PIN);
-  if (clkState != lastClkState) {
-    if (clkState == LOW && (now - lastEncoderTime) > ENCODER_DEBOUNCE) {
-      int dtState   = digitalRead(ENCODER_DT_PIN);
-      int direction = (dtState == HIGH) ? +1 : -1;
-      onEncoderTurn(direction);
-      lastEncoderTime = now;
+  // ==============================
+  // Encoder rotation (ISR + detent accumulator)
+  // - Không bỏ xung khi xoay nhanh
+  // - Gom nhiều bước (detents) rồi cập nhật menu 1 lần để LCD không bị trễ
+  // ==============================
+  int32_t det = fetchEncoderDetents();   // -N..N (đơn vị "nấc")
+  if (det != 0) {
+    if (appState == STATE_PCA9685_TEST) {
+      // Mode PCA9685 cần mượt, xử lý từng nấc
+      int dir = (det > 0) ? +1 : -1;
+      int32_t n = (det > 0) ? det : -det;
+      while (n--) {
+        pca9685OnEncoderTurn(dir);
+      }
+    } else {
+      // Các menu/Settings: xử lý theo delta, in LCD 1 lần
+      onEncoderTurn((int)det);
     }
-    lastClkState = clkState;
   }
+  // Đọc nút nhấn Encoder (debounce chuẩn, click khi NHẢ)
+  // - Click (nhả) hoạt động cho TẤT CẢ trạng thái -> luôn thoát được như trước
+  // - Hold 10s chỉ ở MENU MAIN (STATE_MENU + LEVEL_MAIN) -> vào Menu Settings
+  // - Hold 2s chỉ ở Set Buzzer (STATE_MENU + LEVEL_SETTINGS_BUZZER_EDIT) -> toggle ON/OFF
+  // =====================================================
+const int rawBtn = digitalRead(ENCODER_SW_PIN);
 
-  // Đọc nút nhấn
-// =====================================================
-// Đọc nút nhấn Encoder (click + long-press 10s vào Settings)
-// - Long press 10s CHỈ áp dụng ở MENU CHÍNH (STATE_MENU + LEVEL_MAIN)
-// - Ở mọi tính năng khác: click xử lý NGAY khi nhấn xuống (giữ nguyên hành vi cũ)
-// =====================================================
-int btnState = digitalRead(ENCODER_SW_PIN);
+// Debounce (lọc trạng thái ổn định)
+static int            lastRawBtn    = HIGH;
+static int            stableBtn     = HIGH;
+static unsigned long  lastBounceMs  = 0;
 
-// biến phục vụ long-press (chỉ dùng ở menu chính)
-static bool          holdActive  = false;
-static bool          holdFired   = false;
-static unsigned long holdStartMs = 0;
+static unsigned long  stablePressMs = 0;
+static bool           holdFired     = false;
 
-// Nếu đang hold mà rời khỏi menu chính thì hủy hold (tránh kẹt trạng thái)
-if (holdActive && !(appState == STATE_MENU && currentLevel == LEVEL_MAIN)) {
-  holdActive = false;
-  holdFired  = false;
+const unsigned long BTN_STABLE_MS = 30;  // 30ms là đủ cho encoder switch
+
+if (rawBtn != lastRawBtn) {
+  lastRawBtn   = rawBtn;
+  lastBounceMs = now;
 }
 
-// Debounce theo cạnh
-if (btnState != lastBtnState) {
-  if ((now - lastBtnTime) > BTN_DEBOUNCE) {
+// Khi trạng thái đã ổn định đủ lâu -> cập nhật stable
+if ((now - lastBounceMs) >= BTN_STABLE_MS && stableBtn != lastRawBtn) {
+  stableBtn = lastRawBtn;
 
-    // Cạnh nhấn xuống
-    if (lastBtnState == HIGH && btnState == LOW) {
-      if (appState == STATE_MENU && currentLevel == LEVEL_MAIN) {
-        // Ở menu chính: không click ngay, chờ thả để click / hoặc đủ 10s để vào Settings
-        holdActive  = true;
-        holdFired   = false;
-        holdStartMs = now;
-      } else {
-        // Ở mọi tính năng khác: click NGAY khi nhấn xuống (giữ nguyên hành vi cũ)
-        onButtonClick();
-      }
+  if (stableBtn == LOW) {
+    // bắt đầu nhấn (ổn định)
+    stablePressMs = now;
+    holdFired     = false;
+  } else {
+    // nhả nút -> click chuẩn
+    if (!holdFired) {
+      onButtonClick();
     }
-
-    // Cạnh nhả ra
-    if (lastBtnState == LOW && btnState == HIGH) {
-      // Nếu đang hold ở menu chính và chưa kích hoạt Settings -> coi là 1 click bình thường
-      if (holdActive) {
-        if (!holdFired) {
-          onButtonClick();
-        }
-        holdActive = false;
-        holdFired  = false;
-      }
-    }
-
-    lastBtnTime  = now;
-    lastBtnState = btnState;
   }
 }
 
-// Long press check (chỉ ở menu chính)
-if (holdActive && !holdFired &&
-    appState == STATE_MENU && currentLevel == LEVEL_MAIN &&
-    btnState == LOW &&
-    (now - holdStartMs) >= 10000UL) {
-
-  holdFired = true;
-  enterSettingsMenu();   // hàm bạn đã thêm cho Menu Settings
-  // Không gọi onButtonClick ở đây, để tránh "click" ngay khi nhả nút
+// Khi đang giữ ổn định LOW: xử lý hold theo ngữ cảnh
+if (stableBtn == LOW && !holdFired) {
+  // Hold 10s vào Settings chỉ ở MENU MAIN
+  if (appState == STATE_MENU && currentLevel == LEVEL_MAIN) {
+    if (now - stablePressMs >= 5000UL) {
+      holdFired = true;
+      enterSettingsMenu();
+    }
+  }
+  // Hold 2s toggle ON/OFF chỉ ở Set Buzzer
+  else if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
+    if (now - stablePressMs >= 2000UL) {
+      holdFired = true;
+      settingsBuzzerEnabled = !settingsBuzzerEnabled;
+      printSettingsBuzzerEdit();
+    }
+  }
 }
+
+// Đồng bộ biến cũ (nếu còn chỗ dùng)
+lastBtnState = stableBtn;
 
   // ------------------------------
   // ĐẢM BẢO HEADER LED MATRIX & RS485 LUÔN ĐÚNG
@@ -721,9 +798,7 @@ void onEncoderTurn(int direction) {
 
   // ===== SETTINGS MENU (không dùng tăng tốc bước nhảy) =====
   if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_MENU) {
-    currentSettingsIndex += direction;
-    if (currentSettingsIndex < 0) currentSettingsIndex = SETTINGS_MENU_COUNT - 1;
-    if (currentSettingsIndex >= SETTINGS_MENU_COUNT) currentSettingsIndex = 0;
+    currentSettingsIndex = wrapIndex(currentSettingsIndex + direction, SETTINGS_MENU_COUNT);
     printSettingsMenuItem();
     return;
   }
@@ -737,78 +812,72 @@ void onEncoderTurn(int direction) {
   }
 
   if (appState == STATE_MENU && currentLevel == LEVEL_DFROBOT_SUB) {
-  currentDFRobotIndex += direction;
-  if (currentDFRobotIndex < 0) currentDFRobotIndex = DFROBOT_MENU_COUNT - 1;
-  if (currentDFRobotIndex >= DFROBOT_MENU_COUNT) currentDFRobotIndex = 0;
-  printDFRobotSubMenuItem();
-  return;
+    currentDFRobotIndex = wrapIndex(currentDFRobotIndex + direction, DFROBOT_MENU_COUNT);
+    printDFRobotSubMenuItem();
+    return;
   }
 
   // Chỉ cho phép xoay khi ở MENU (con trỏ menu)
   if (appState != STATE_MENU) return;
 
   // ====== TĂNG TỐC THEO TỐC ĐỘ XOAY ======
-  // Xoay càng nhanh thì bước nhảy càng lớn (2 hoặc 3 bước/lần)
+  // LƯU Ý:
+  // - Nếu direction = +/-1: giữ cơ chế tăng tốc cũ (2 hoặc 3 bước) như trước.
+  // - Nếu direction = +/-N (N>1): đây là delta đã gom từ ISR -> đi đúng N nấc,
+  //   KHÔNG nhân thêm step để tránh nhảy quá nhiều.
   static unsigned long lastTurnMs = 0;
   unsigned long now = millis();
   unsigned long dt  = now - lastTurnMs;
   lastTurnMs = now;
 
-  int step = 1;  // mặc định nhảy 1 mục
+  int delta = direction; // mặc định: đi đúng số nấc encoder
 
-  // Nếu quay nhanh (liên tục, dt nhỏ) thì nhảy nhiều mục hơn
-  if (dt < 40) {
-    step = 3;    // xoay rất nhanh
-  } else if (dt < 120) {
-    step = 2;    // xoay nhanh vừa
+  if (abs(direction) == 1) {
+    int step = 1;  // mặc định nhảy 1 mục
+
+    // Nếu quay nhanh (liên tục, dt nhỏ) thì nhảy nhiều mục hơn
+    if (dt < 40) {
+      step = 3;    // xoay rất nhanh
+    } else if (dt < 120) {
+      step = 2;    // xoay nhanh vừa
+    }
+
+    delta = direction * step;
   }
-
-  int delta = direction * step;
   // =======================================
 
   if (currentLevel == LEVEL_MAIN) {
-    currentMainIndex += delta;
-    if (currentMainIndex < 0) currentMainIndex = MAIN_MENU_COUNT - 1;
-    if (currentMainIndex >= MAIN_MENU_COUNT) currentMainIndex = 0;
+    currentMainIndex = wrapIndex(currentMainIndex + delta, MAIN_MENU_COUNT);
     printMainMenuItem();
 
   } else if (currentLevel == LEVEL_I2C_SUB) {
-    currentI2CIndex += delta;
-    if (currentI2CIndex < 0) currentI2CIndex = I2C_MENU_COUNT - 1;
-    if (currentI2CIndex >= I2C_MENU_COUNT) currentI2CIndex = 0;
+    currentI2CIndex = wrapIndex(currentI2CIndex + delta, I2C_MENU_COUNT);
     printI2CSubMenuItem();
-    
-  } else if (currentLevel == LEVEL_DFROBOT_SUB) {
-  currentDFRobotIndex += delta;
-  if (currentDFRobotIndex < 0) currentDFRobotIndex = DFROBOT_MENU_COUNT - 1;
-  if (currentDFRobotIndex >= DFROBOT_MENU_COUNT) currentDFRobotIndex = 0;
-  printDFRobotSubMenuItem();
 
+  } else if (currentLevel == LEVEL_DFROBOT_SUB) { /*
+    currentDFRobotIndex += delta;
+    if (currentDFRobotIndex < 0) currentDFRobotIndex = DFROBOT_MENU_COUNT - 1;
+    if (currentDFRobotIndex >= DFROBOT_MENU_COUNT) currentDFRobotIndex = 0;
+    printDFRobotSubMenuItem();
+  */
   } else if (currentLevel == LEVEL_BT_SUB) {
-    currentBTIndex += delta;
-    if (currentBTIndex < 0) currentBTIndex = BT_MENU_COUNT - 1;
-    if (currentBTIndex >= BT_MENU_COUNT) currentBTIndex = 0;
+    currentBTIndex = wrapIndex(currentBTIndex + delta, BT_MENU_COUNT);
     printBTSubMenuItem();
 
   } else if (currentLevel == LEVEL_I2C_OLED_SUB) {
-    currentI2COLEDIndex += delta;
-    if (currentI2COLEDIndex < 0) currentI2COLEDIndex = I2C_OLED_MENU_COUNT - 1;
-    if (currentI2COLEDIndex >= I2C_OLED_MENU_COUNT) currentI2COLEDIndex = 0;
+    currentI2COLEDIndex = wrapIndex(currentI2COLEDIndex + delta, I2C_OLED_MENU_COUNT);
     printI2COLEDSubMenuItem();
 
   } else if (currentLevel == LEVEL_MATRIX_SUB) {
-    currentMatrixIndex += delta;
-    if (currentMatrixIndex < 0) currentMatrixIndex = MATRIX_MENU_COUNT - 1;
-    if (currentMatrixIndex >= MATRIX_MENU_COUNT) currentMatrixIndex = 0;
+    currentMatrixIndex = wrapIndex(currentMatrixIndex + delta, MATRIX_MENU_COUNT);
     printMatrixSubMenuItem();   // in lại menu + header Matrix
 
   } else if (currentLevel == LEVEL_RS485_SUB) {
-    currentRS485Index += delta;
-    if (currentRS485Index < 0) currentRS485Index = RS485_MENU_COUNT - 1;
-    if (currentRS485Index >= RS485_MENU_COUNT) currentRS485Index = 0;
+    currentRS485Index = wrapIndex(currentRS485Index + delta, RS485_MENU_COUNT);
     printRS485SubMenuItem();
   }
 }
+
 
 
 // ======================
@@ -864,6 +933,7 @@ if (appState == STATE_MENU && currentLevel == LEVEL_DFROBOT_SUB) {
       // vào chỉnh Set Buzzer
       currentLevel = LEVEL_SETTINGS_BUZZER_EDIT;
       settingsCountdownSec = normalizeCountdownSec(COUNTDOWN_SECONDS);
+      settingsBuzzerEnabled = buzzerEnabled;
       printSettingsBuzzerEdit();
     } 
     else if (currentSettingsIndex == 1) {
@@ -885,19 +955,21 @@ if (appState == STATE_MENU && currentLevel == LEVEL_DFROBOT_SUB) {
     return;
   }
 
-  if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
-    // nhấn để LƯU
-    COUNTDOWN_SECONDS = normalizeCountdownSec(settingsCountdownSec);
-    saveCountdownSetting(COUNTDOWN_SECONDS);
+if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
+  // nhấn để LƯU
+  COUNTDOWN_SECONDS = normalizeCountdownSec(settingsCountdownSec);
+  buzzerEnabled     = settingsBuzzerEnabled;
 
-    // áp dụng ngay (reset countdown + tắt còi nếu đang kêu)
-    restartCountdownNow(now);
+  saveCountdownSetting(COUNTDOWN_SECONDS);
+  saveBuzzerSetting(buzzerEnabled);
 
-    // quay về Menu Settings
-    currentLevel = LEVEL_SETTINGS_MENU;
-    printSettingsMenuItem();
-    return;
-  }
+  // áp dụng ngay
+  restartCountdownNow(now);
+
+  currentLevel = LEVEL_SETTINGS_MENU;
+  printSettingsMenuItem();
+  return;
+}
 
   // Đang ở TM1637 -> nhấn 1 lần để thoát về MENU
   if (appState == STATE_TM1637) {
@@ -1454,7 +1526,7 @@ if (appState == STATE_MENU && currentLevel == LEVEL_DFROBOT_SUB) {
         printMainMenuItem();
       } break;
     } 
-  } else if (currentLevel == LEVEL_DFROBOT_SUB) {
+  } /*else if (currentLevel == LEVEL_DFROBOT_SUB) {
   switch (currentDFRobotIndex) {
     case 0: // DFRobotAnalog
       startDFRobotAnalogMode();
@@ -1473,7 +1545,7 @@ if (appState == STATE_MENU && currentLevel == LEVEL_DFROBOT_SUB) {
       break;
   }
   return;
-  }
+  }*/
 }
 
 // ======================
@@ -1559,14 +1631,22 @@ void saveCountdownSetting(uint16_t sec) {
 
 void restartCountdownNow(unsigned long now) {
   countdownStartMillis = now;
-  countdownRemaining   = (int)COUNTDOWN_SECONDS;
-  countdownFinished    = false;
 
-  buzzerActive           = false;
-  buzzerState            = false;
+  // Nếu buzzer OFF -> countdown luôn 0s và không chạy
+  if (!buzzerEnabled) {
+    countdownRemaining = 0;
+    countdownFinished  = true;
+  } else {
+    countdownRemaining = (int)COUNTDOWN_SECONDS;
+    countdownFinished  = false;
+  }
+
+  buzzerActive = false;
+  buzzerState  = false;
   lastBuzzerToggleMillis = now;
   digitalWrite(BUZZER_PIN, LOW);
 }
+
 
 void printSettingsMenuItem() {
   lcd.clear();
@@ -1586,15 +1666,18 @@ static void fmtMMSS(char* out, size_t outsz, uint16_t sec) {
 void printSettingsBuzzerEdit() {
   lcd.clear();
   lcdPrintLine(0, "Set Buzzer");
+
   char mmss[6];
   fmtMMSS(mmss, sizeof(mmss), settingsCountdownSec);
 
   char l1[21];
-  snprintf(l1, sizeof(l1), "Time: %s", mmss);
+  snprintf(l1, sizeof(l1), "Time: %s  %s", mmss, settingsBuzzerEnabled ? "ON" : "OFF");
   lcdPrintLine(1, l1);
 
   lcdPrintLine(2, "Xoay: +/- 30s");
-  lcdPrintLine(3, "Nhan nut de LUU");
+
+  // Giữ 2s để toggle, nhấn nhanh để lưu
+  lcdPrintLine(3, "Nhan:Luu  Giu2s:TG");
 }
 
 void enterSettingsMenu() {
@@ -1624,4 +1707,16 @@ void printSettingsAbout() {
   lcdPrintLine(1, "Trainer: hnghao");
   lcdPrintLine(2, "Version: 1.0");
   lcdPrintLine(3, "Base on ChatGPT");
+}
+
+void loadBuzzerSetting() {
+  prefs.begin(PREF_NS, true);
+  buzzerEnabled = prefs.getBool(PREF_KEY_BUZZ_EN, true);
+  prefs.end();
+}
+
+void saveBuzzerSetting(bool en) {
+  prefs.begin(PREF_NS, false);
+  prefs.putBool(PREF_KEY_BUZZ_EN, en);
+  prefs.end();
 }

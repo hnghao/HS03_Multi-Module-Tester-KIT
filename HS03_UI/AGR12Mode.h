@@ -25,8 +25,8 @@ static const uint8_t  AGR12_ADDR_         = 0x50;
 static const uint8_t  AGR12_CMD_REG_      = 0xAC;
 static const uint8_t  AGR12_CMD_MEASURE_  = 0x12;
 
-static const uint32_t AGR12_READ_INTERVAL_MS_ = 200;  // giữ nguyên như code bạn gửi
-static const uint32_t AGR12_MEASURE_TIME_MS_  = 150;
+static const uint32_t AGR12_READ_INTERVAL_MS_ = 100;  // giữ nguyên như code bạn gửi
+static const uint32_t AGR12_MEASURE_TIME_MS_  = 100;
 static const uint8_t  AGR12_RETRY_MAX_        = 3;
 static const uint8_t  AGR12_FILTER_SIZE_      = 5;
 
