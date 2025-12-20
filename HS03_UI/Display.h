@@ -68,6 +68,12 @@ void updateHeaderRow() {
                currentPos, totalFunc, countdownRemaining);
       lcdPrintLine(0, line);
 
+    } else if (currentLevel == LEVEL_ANALOG_SUB) {
+      int currentPos = currentAnalogIndex + 1;
+      int totalFunc  = ANALOG_MENU_COUNT;
+      snprintf(line, sizeof(line), "Analog %d/%d  %3ds",
+               currentPos, totalFunc, countdownRemaining);
+      lcdPrintLine(0, line);
     } else {
       // Phòng hờ (ít khi vào)
       snprintf(line, sizeof(line), "MENU ?/?  %3ds", countdownRemaining);
@@ -147,6 +153,36 @@ void printI2CSubMenuItem() {
     lcdPrintLine(1 + row, buf);
   }
 }
+
+void printAnalogSubMenuItem() {
+  lcd.clear();
+  updateHeaderRow();   // Header: "Analog x/y  zzzs"
+
+  int start = currentAnalogIndex - 1;
+  if (start < 0) start = 0;
+
+  int maxStart = ANALOG_MENU_COUNT - 3;
+  if (maxStart < 0) maxStart = 0;
+
+  if (start > maxStart) start = maxStart;
+
+  for (int row = 0; row < 3; ++row) {
+    int idx = start + row;
+    char buf[21];
+
+    if (idx >= 0 && idx < ANALOG_MENU_COUNT) {
+      if (idx == currentAnalogIndex) {
+        snprintf(buf, sizeof(buf), "> %d. %s", idx + 1, analogSubMenuItems[idx]);
+      } else {
+        snprintf(buf, sizeof(buf), "  %d. %s", idx + 1, analogSubMenuItems[idx]);
+      }
+    } else {
+      snprintf(buf, sizeof(buf), " ");
+    }
+    lcdPrintLine(1 + row, buf);
+  }
+}
+
 
 // DFRobot submenu extern
 extern int currentDFRobotIndex;

@@ -58,6 +58,7 @@ LedControl matrixLc = LedControl(MATRIX_DIN_PIN, MATRIX_CLK_PIN, MATRIX_CS_PIN, 
 enum MenuLevel {
   LEVEL_MAIN = 0,
   LEVEL_I2C_SUB,
+  LEVEL_ANALOG_SUB,
   LEVEL_BT_SUB,
   LEVEL_MATRIX_SUB,
   LEVEL_I2C_OLED_SUB,
@@ -88,7 +89,10 @@ enum AppState {
   STATE_I2C_DHT20_AHT20,
   STATE_I2C_MPU6050,
   STATE_DFROBOT_URM37,
-  STATE_I2C_AGR12
+  STATE_I2C_AGR12,
+  STATE_ANALOG_BLINK,   // <-- THÊM DÒNG NÀY
+  STATE_I2C_BUI_ASAIR,
+  STATE_I2C_ACD1200
 };
 
 // ======================
@@ -116,7 +120,6 @@ const char* mainMenuItems[] = {
 
 const int MAIN_MENU_COUNT = sizeof(mainMenuItems) / sizeof(mainMenuItems[0]);
 
-// Sub-menu I2C
 const char* const i2cSubMenuItems[] = {
   "Scan",
   "Test PCA9685",
@@ -125,10 +128,21 @@ const char* const i2cSubMenuItems[] = {
   "DHT20_AHT20",
   "MPU6050",
   "AGR12",
-  "<-- Back"
+  "BUI ASAIR",
+  "ACD1200",    // (9)
+  "<-- Back"    // (10)
 };
 
 const int I2C_MENU_COUNT = sizeof(i2cSubMenuItems) / sizeof(i2cSubMenuItems[0]);
+
+// ===== THÊM SUBMENU ANALOG (3 MỤC) =====
+const char* const analogSubMenuItems[] = {
+  "Read Analog",
+  "Blink LED",
+  "<-- Back"
+};
+const int ANALOG_MENU_COUNT = sizeof(analogSubMenuItems) / sizeof(analogSubMenuItems[0]);
+
 // ======================
 // SETTINGS (Menu ẩn)
 // ======================
@@ -223,6 +237,7 @@ int currentMatrixIndex = 0;    // index cho sub-menu Led Matrix
 int currentRS485Index  = 0;    // index cho sub-menu RS485
 int currentBTIndex     = 0;    // index cho submenu Bluetooth
 int currentDFRobotIndex = 0;
+int currentAnalogIndex = 0;   // <-- THÊM DÒNG NÀY
 
 int  lastClkState     = HIGH;
 bool lastBtnState     = HIGH;
@@ -376,6 +391,9 @@ void saveBuzzerSetting(bool en);
 #include "MPU6050Mode.h"
 #include "URM37Mode.h"
 #include "AGR12Mode.h"
+#include "AnalogBlinkMode.h"   // <-- THÊM DÒNG NÀY
+#include "BuiASAIRMode.h"
+#include "ACD1200Mode.h"
 
 // Định nghĩa object MAX6675 dùng chung cho mode
 MAX6675 max6675(MAX6675_CLK_PIN, MAX6675_CS_PIN, MAX6675_DO_PIN);
@@ -546,10 +564,16 @@ void loop() {
   updateCountdown(now);
   handleBuzzer(now);
 
-  // Cập nhật theo trạng thái
+  // ------------------------------
+  // Update theo trạng thái hiện tại
+  // ------------------------------
   switch (appState) {
     case STATE_ANALOG:
       updateAnalogMode(now);
+      break;
+
+    case STATE_ANALOG_BLINK:
+      updateAnalogBlinkMode(now);
       break;
 
     case STATE_I2C_AGR12:
@@ -572,7 +596,7 @@ void loop() {
       updateI2CScanMode(now);
       break;
 
-    case STATE_I2C_AM2315C:       
+    case STATE_I2C_AM2315C:
       updateAM2315CMode(now);
       break;
 
@@ -597,11 +621,11 @@ void loop() {
       break;
 
     case STATE_SEGMENT_4X7_HC595:
-        update4x7HC595Mode(now);   // hàm này đã alias sang header mới
+      update4x7HC595Mode(now);
       break;
 
     case STATE_TM1637:
-      updateTM1637Mode(now);     // cập nhật TM1637 (12:34 + nháy colon)
+      updateTM1637Mode(now);
       break;
 
     case STATE_MAX6675:
@@ -615,6 +639,14 @@ void loop() {
     case STATE_I2C_MPU6050:
       updateMPU6050Mode(now);
       break;
+      
+    case STATE_I2C_BUI_ASAIR:
+      updateBuiASAIRMode(now);
+      break;
+
+    case STATE_I2C_ACD1200:
+      updateACD1200Mode(now);
+      break;
 
     default:
       break;
@@ -622,8 +654,6 @@ void loop() {
 
   // ==============================
   // Encoder rotation (ISR + detent accumulator)
-  // - Không bỏ xung khi xoay nhanh
-  // - Gom nhiều bước (detents) rồi cập nhật menu 1 lần để LCD không bị trễ
   // ==============================
   int32_t det = fetchEncoderDetents();   // -N..N (đơn vị "nấc")
   if (det != 0) {
@@ -639,65 +669,91 @@ void loop() {
       onEncoderTurn((int)det);
     }
   }
-  // Đọc nút nhấn Encoder (debounce chuẩn, click khi NHẢ)
-  // - Click (nhả) hoạt động cho TẤT CẢ trạng thái -> luôn thoát được như trước
-  // - Hold 10s chỉ ở MENU MAIN (STATE_MENU + LEVEL_MAIN) -> vào Menu Settings
-  // - Hold 2s chỉ ở Set Buzzer (STATE_MENU + LEVEL_SETTINGS_BUZZER_EDIT) -> toggle ON/OFF
+
   // =====================================================
-const int rawBtn = digitalRead(ENCODER_SW_PIN);
+  // Nút nhấn Encoder (debounce chuẩn, click khi NHẢ)
+  // Fix PCA9685: chống "thoát rồi chọn lại ngay" do bounce / xử lý chồng chéo
+  // =====================================================
+  const int rawBtn = digitalRead(ENCODER_SW_PIN);
 
-// Debounce (lọc trạng thái ổn định)
-static int            lastRawBtn    = HIGH;
-static int            stableBtn     = HIGH;
-static unsigned long  lastBounceMs  = 0;
+  // Debounce (lọc trạng thái ổn định)
+  static int            lastRawBtn    = HIGH;
+  static int            stableBtn     = HIGH;
+  static unsigned long  lastBounceMs  = 0;
 
-static unsigned long  stablePressMs = 0;
-static bool           holdFired     = false;
+  static unsigned long  stablePressMs = 0;
+  static bool           holdFired     = false;
 
-const unsigned long BTN_STABLE_MS = 30;  // 30ms là đủ cho encoder switch
+  // Ghi nhớ state tại thời điểm BẮT ĐẦU nhấn (ổn định)
+  static int            pressedState  = -1;
 
-if (rawBtn != lastRawBtn) {
-  lastRawBtn   = rawBtn;
-  lastBounceMs = now;
-}
+  // Chặn click thêm 1 khoảng sau khi thoát PCA9685 để tránh nhảy vào lại
+  static unsigned long  clickBlockUntilMs = 0;
 
-// Khi trạng thái đã ổn định đủ lâu -> cập nhật stable
-if ((now - lastBounceMs) >= BTN_STABLE_MS && stableBtn != lastRawBtn) {
-  stableBtn = lastRawBtn;
+  const unsigned long BTN_STABLE_MS = 30;   // debounce cơ bản
+  const unsigned long PCA_EXIT_BLOCK_MS = 400; // chặn click sau exit PCA
 
-  if (stableBtn == LOW) {
-    // bắt đầu nhấn (ổn định)
-    stablePressMs = now;
-    holdFired     = false;
-  } else {
-    // nhả nút -> click chuẩn
-    if (!holdFired) {
-      onButtonClick();
+  if (rawBtn != lastRawBtn) {
+    lastRawBtn   = rawBtn;
+    lastBounceMs = now;
+  }
+
+  // Khi trạng thái đã ổn định đủ lâu -> cập nhật stable
+  if ((now - lastBounceMs) >= BTN_STABLE_MS && stableBtn != lastRawBtn) {
+    stableBtn = lastRawBtn;
+
+    if (stableBtn == LOW) {
+      // bắt đầu nhấn (ổn định)
+      stablePressMs = now;
+      holdFired     = false;
+      pressedState  = (int)appState;   // <- quan trọng: nhớ state lúc nhấn
+    } else {
+      // nhả nút -> click
+      if (!holdFired && now >= clickBlockUntilMs) {
+
+        // Nếu click bắt đầu từ PCA9685 -> luôn thoát về menu I2C và chặn click kế tiếp
+        if (pressedState == (int)STATE_PCA9685_TEST) {
+          exitPCA9685ToI2CMenu();
+          clickBlockUntilMs = now + PCA_EXIT_BLOCK_MS;
+        } else {
+          // Các state khác giữ nguyên như cũ
+          onButtonClick();
+        }
+      }
     }
   }
-}
 
-// Khi đang giữ ổn định LOW: xử lý hold theo ngữ cảnh
-if (stableBtn == LOW && !holdFired) {
-  // Hold 10s vào Settings chỉ ở MENU MAIN
-  if (appState == STATE_MENU && currentLevel == LEVEL_MAIN) {
-    if (now - stablePressMs >= 5000UL) {
-      holdFired = true;
-      enterSettingsMenu();
+  // HOLD theo ngữ cảnh
+  if (stableBtn == LOW && !holdFired) {
+
+    // Nếu nhấn bắt đầu trong PCA9685 -> chỉ cho phép HOLD PCA, không cho lẫn HOLD menu khác
+    if (pressedState == (int)STATE_PCA9685_TEST) {
+      if (now - stablePressMs >= 3000UL) {
+        holdFired = true;      // chặn click khi nhả
+        pcaCenterAllTo90();    // đưa 16 servo về 90°
+      }
+    }
+    else {
+      // Hold 5s vào Settings chỉ ở MENU MAIN
+      if (appState == STATE_MENU && currentLevel == LEVEL_MAIN) {
+        if (now - stablePressMs >= 5000UL) {
+          holdFired = true;
+          enterSettingsMenu();
+        }
+      }
+      // Hold 2s toggle ON/OFF chỉ ở Set Buzzer
+      else if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
+        if (now - stablePressMs >= 2000UL) {
+          holdFired = true;
+          settingsBuzzerEnabled = !settingsBuzzerEnabled;
+          printSettingsBuzzerEdit();
+        }
+      }
     }
   }
-  // Hold 2s toggle ON/OFF chỉ ở Set Buzzer
-  else if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
-    if (now - stablePressMs >= 2000UL) {
-      holdFired = true;
-      settingsBuzzerEnabled = !settingsBuzzerEnabled;
-      printSettingsBuzzerEdit();
-    }
-  }
-}
 
-// Đồng bộ biến cũ (nếu còn chỗ dùng)
-lastBtnState = stableBtn;
+  // Đồng bộ biến cũ (nếu còn chỗ dùng)
+  lastBtnState = stableBtn;
 
   // ------------------------------
   // ĐẢM BẢO HEADER LED MATRIX & RS485 LUÔN ĐÚNG
@@ -708,18 +764,16 @@ lastBtnState = stableBtn;
     } else if (currentLevel == LEVEL_RS485_SUB) {
       drawRS485Header(currentRS485Index);
     } else if (currentLevel == LEVEL_I2C_OLED_SUB) {
-    // Đảm bảo khi đang ở menu OLED thì header luôn là "OLED x/3 NNs"
-    drawI2COLEDHeader(currentI2COLEDIndex);
+      drawI2COLEDHeader(currentI2COLEDIndex);
     } else if (currentLevel == LEVEL_BT_SUB) {
-      // Đảm bảo khi đang ở menu Bluetooth thì header luôn là "BLE x/3 NNs"
       drawBTHeader(currentBTIndex);
     }
   } else if (appState == STATE_MATRIX_8X32) {
     drawMatrixHeader(0);
   } else if (appState == STATE_RS485_SHTC3) {
-    drawRS485Header(0);   // SHTC3 là sensor 1/3
+    drawRS485Header(0);
   } else if (appState == STATE_RS485_AGH3485) {
-    drawRS485Header(1);   // AGH3485 là sensor 2/3
+    drawRS485Header(1);
   }
 }
 
@@ -854,6 +908,10 @@ void onEncoderTurn(int direction) {
     currentI2CIndex = wrapIndex(currentI2CIndex + delta, I2C_MENU_COUNT);
     printI2CSubMenuItem();
 
+  } else if (currentLevel == LEVEL_ANALOG_SUB) {   // <-- THÊM KHỐI NÀY
+    currentAnalogIndex = wrapIndex(currentAnalogIndex + delta, ANALOG_MENU_COUNT);
+    printAnalogSubMenuItem();
+
   } else if (currentLevel == LEVEL_DFROBOT_SUB) { /*
     currentDFRobotIndex += delta;
     if (currentDFRobotIndex < 0) currentDFRobotIndex = DFROBOT_MENU_COUNT - 1;
@@ -979,18 +1037,27 @@ if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
     return;
   }
 
-  // Đang ở Test PCA9685
-  //  - 1 click: thoát về menu I2C (xử lý trễ trong updatePCA9685TestMode)
-  //  - 2 click nhanh: reset 16 servo về 90°
+  // PCA9685: Click -> quay lại menu I2C (thoát mode)
+  // Hold 3s -> về 90° đã được xử lý trong phần HOLD debounce ở loop()
   if (appState == STATE_PCA9685_TEST) {
-    pcaOnRawButtonClick();
+    exitPCA9685ToI2CMenu();
     return;
   }
 
-  // Đang ở Analog -> về MENU
+  // Đang ở Analog Read -> về submenu Analog
   if (appState == STATE_ANALOG) {
-    appState = STATE_MENU;
-    printMainMenuItem();
+    appState     = STATE_MENU;
+    currentLevel = LEVEL_ANALOG_SUB;
+    printAnalogSubMenuItem();
+    return;
+  }
+
+  // Đang ở Blink LED -> về submenu Analog
+  if (appState == STATE_ANALOG_BLINK) {
+    stopAnalogBlinkMode();
+    appState     = STATE_MENU;
+    currentLevel = LEVEL_ANALOG_SUB;
+    printAnalogSubMenuItem();
     return;
   }
 
@@ -1002,7 +1069,6 @@ if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
     printDFRobotSubMenuItem();
     return;
   }
-
 
   // Đang ở I2C Scan -> về submenu I2C
   if (appState == STATE_I2C_SCAN) {
@@ -1041,6 +1107,24 @@ if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
     stopMPU6050Mode();
     appState     = STATE_MENU;
     currentLevel = LEVEL_I2C_SUB;
+    printI2CSubMenuItem();
+    return;
+  }
+
+  if (appState == STATE_I2C_BUI_ASAIR) {
+    stopBuiASAIRMode();
+    appState       = STATE_MENU;
+    currentLevel   = LEVEL_I2C_SUB;
+    currentI2CIndex = 7;            // trỏ đúng vào "BUI ASAIR"
+    printI2CSubMenuItem();
+    return;
+  }
+
+  if (appState == STATE_I2C_ACD1200) {
+    stopACD1200Mode();
+    appState        = STATE_MENU;
+    currentLevel    = LEVEL_I2C_SUB;
+    currentI2CIndex = 8;          // trỏ đúng mục "ACD1200" (index 8)
     printI2CSubMenuItem();
     return;
   }
@@ -1167,8 +1251,12 @@ if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
         printI2CSubMenuItem();
         break;
 
-      case 1: // Analog (ReadAnalog)
-        startAnalogMode();
+      case 1: // Analog -> mở submenu 3 mục
+        currentLevel      = LEVEL_ANALOG_SUB;
+        currentAnalogIndex = 0;
+        strncpy(headerLabel, "Analog", sizeof(headerLabel));
+        headerLabel[sizeof(headerLabel) - 1] = '\0';
+        printAnalogSubMenuItem();
         break;
 
       case 2: { // Bluetooth -> vào submenu Bluetooth
@@ -1375,12 +1463,23 @@ if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
         startAGR12Mode();
       } break;
 
-      case 7: // <-- Back
+      case 7: { // BUI ASAIR
+        appState = STATE_I2C_BUI_ASAIR;
+        // Mode dùng full LCD 4 dòng -> tự tắt header trong startBuiASAIRMode()
+        startBuiASAIRMode();
+      } break;
+
+      case 8: { // ACD1200
+        appState = STATE_I2C_ACD1200;
+        startACD1200Mode();
+      } break;
+
+      case 9: // <-- Back
         currentLevel = LEVEL_MAIN;
         strncpy(headerLabel, "Menu", sizeof(headerLabel));
         headerLabel[sizeof(headerLabel) - 1] = '\0';
         printMainMenuItem();
-      break;
+        break;
 
     }
   } else if (currentLevel == LEVEL_I2C_OLED_SUB) {
@@ -1501,6 +1600,22 @@ if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
       } break;
     }
 
+  } else if (currentLevel == LEVEL_ANALOG_SUB) {
+  switch (currentAnalogIndex) {
+    case 0: // Read Analog (giữ nguyên mode hiện tại)
+      startAnalogMode();
+      break;
+
+    case 1: // Blink LED
+      startAnalogBlinkMode();
+      break;
+
+    case 2: // <-- Back -> về menu 16 tính năng
+      currentLevel   = LEVEL_MAIN;
+      currentMainIndex = 1;  // đứng đúng mục Analog
+      printMainMenuItem();
+      break;
+    }
   } else if (currentLevel == LEVEL_RS485_SUB) {
     // ===== SUB-MENU SENSOR RS485 =====
     switch (currentRS485Index) {
