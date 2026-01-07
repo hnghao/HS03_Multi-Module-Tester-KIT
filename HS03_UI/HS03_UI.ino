@@ -82,6 +82,7 @@ enum AppState {
   STATE_MATRIX_8X32,     // Matrix 8x32
   STATE_RS485_SHTC3,     // Sensor RS485: SHTC3
   STATE_RS485_AGH3485,     // Sensor RS485: AGH3485 (ASAIR)
+  STATE_RS485_URM12_DFROBOT,
   STATE_SEGMENT_4X7_HC595,
   STATE_TM1637,           // 4x7 Segment TM1637
   STATE_PCA9685_TEST,
@@ -92,7 +93,8 @@ enum AppState {
   STATE_I2C_AGR12,
   STATE_ANALOG_BLINK,   // <-- THÊM DÒNG NÀY
   STATE_I2C_BUI_ASAIR,
-  STATE_I2C_ACD1200
+  STATE_I2C_ACD1200,
+  STATE_RS485_URM14_DFROBOT
 };
 
 // ======================
@@ -198,7 +200,8 @@ const int MATRIX_MENU_COUNT = sizeof(matrixSubMenuItems) / sizeof(matrixSubMenuI
 const char* const rs485SubMenuItems[] = {
   "1. SHTC3",
   "2. AGH3485 (ASAIR)",
-  "3. Sensor 3",
+  "3. URM12_DFRobot",
+  "4. URM14_DFRobot",
   "<-- Back"
 };
 
@@ -394,7 +397,8 @@ void saveBuzzerSetting(bool en);
 #include "AnalogBlinkMode.h"   // <-- THÊM DÒNG NÀY
 #include "BuiASAIRMode.h"
 #include "ACD1200Mode.h"
-
+#include "URM12_DFRobotMode.h"
+#include "URM14_DFRobotMode.h"
 // Định nghĩa object MAX6675 dùng chung cho mode
 MAX6675 max6675(MAX6675_CLK_PIN, MAX6675_CS_PIN, MAX6675_DO_PIN);
 
@@ -428,12 +432,12 @@ void drawMatrixHeader(uint8_t funcIndex) {
 // Hiển thị dạng: "RS485 x/3  NNs"
 // ======================
 void drawRS485Header(uint8_t funcIndex) {
-  // funcIndex: 0..3 (0=SHTC3, 1=Sensor2, 2=Sensor3, 3=Back)
+  // funcIndex: 0..4 (0=SHTC3, 1=AGH3485, 2=URM12, 3=URM14, 4=Back)
   uint8_t sensorPos;
-  if (funcIndex <= 2) sensorPos = funcIndex + 1; // 1..3
-  else sensorPos = 3;                            // Back xem như 3/3
+  if (funcIndex <= 3) sensorPos = funcIndex + 1; // 1..4
+  else sensorPos = 4;                            // Back xem như 4/4
 
-  const uint8_t total = 3;
+  const uint8_t total = 4;
 
   int cd = countdownRemaining;
   if (cd < 0) cd = 0;
@@ -620,6 +624,14 @@ void loop() {
       updateRS485AGH3485Mode(now); // đọc AGH3485 RS485 & hiển thị LCD
       break;
 
+    case STATE_RS485_URM12_DFROBOT:
+      updateURM12DFRobotMode(now);
+      break;
+
+    case STATE_RS485_URM14_DFROBOT:
+      updateURM14DFRobotMode(now);
+      break;
+
     case STATE_SEGMENT_4X7_HC595:
       update4x7HC595Mode(now);
       break;
@@ -771,9 +783,13 @@ void loop() {
   } else if (appState == STATE_MATRIX_8X32) {
     drawMatrixHeader(0);
   } else if (appState == STATE_RS485_SHTC3) {
-    drawRS485Header(0);
+    if (headerEnabled) drawRS485Header(0);
   } else if (appState == STATE_RS485_AGH3485) {
-    drawRS485Header(1);
+    if (headerEnabled) drawRS485Header(1);
+  } else if (appState == STATE_RS485_URM12_DFROBOT) {
+    if (headerEnabled) drawRS485Header(2);
+  } else if (appState == STATE_RS485_URM14_DFROBOT) {
+    if (headerEnabled) drawRS485Header(3);
   }
 }
 
@@ -1183,6 +1199,23 @@ if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
     return;
   }
 
+  if (appState == STATE_RS485_URM12_DFROBOT) {
+    stopURM12DFRobotMode();
+    appState          = STATE_MENU;
+    currentLevel      = LEVEL_RS485_SUB;
+    currentRS485Index = 2;
+    printRS485SubMenuItem();
+    return;
+  }
+
+  if (appState == STATE_RS485_URM14_DFROBOT) {
+    stopURM14DFRobotMode();
+    appState          = STATE_MENU;
+    currentLevel      = LEVEL_RS485_SUB;
+    currentRS485Index = 3;
+    printRS485SubMenuItem();
+    return;
+  }
 
   // Đang ở 4x7 Segment HC595 (4/8 LED)
   //  - Lần nhấn đầu (ở trang chọn 4/8) -> handle4x7HC595ButtonClick() trả true -> CHỌN mode, KHÔNG thoát
@@ -1206,7 +1239,7 @@ if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
   }
 
   // Đang ở submenu RS485: chọn sensor
-  if (appState == STATE_MENU && currentLevel == LEVEL_RS485_SUB) {
+if (appState == STATE_MENU && currentLevel == LEVEL_RS485_SUB) {
     if (currentRS485Index == 0) {
       // 1. SHTC3
       appState = STATE_RS485_SHTC3;
@@ -1216,13 +1249,13 @@ if (appState == STATE_MENU && currentLevel == LEVEL_SETTINGS_BUZZER_EDIT) {
       appState = STATE_RS485_AGH3485;
       startRS485AGH3485Mode();
     } else if (currentRS485Index == 2) {
-      // 3. Sensor 3 (chưa dùng) -> màn "coming soon"
-      lcd.clear();
-      lcdPrintLine(0, "RS485 Sensor 3   ");
-      lcdPrintLine(1, "(Chua cai dat)   ");
-      lcdPrintLine(2, "Nhan nut de Back ");
-      lcdPrintLine(3, " ");
-      appState = STATE_SIMPLE_SCREEN;
+      // 3. URM12_DFRobot
+      appState = STATE_RS485_URM12_DFROBOT;
+      startURM12DFRobotMode();
+    } else if (currentRS485Index == 3) {
+      // 4. URM14_DFRobot
+      appState = STATE_RS485_URM14_DFROBOT;
+      startURM14DFRobotMode();
     } else {
       // "<-- Back" -> quay lại MENU chính
       currentLevel     = LEVEL_MAIN;
