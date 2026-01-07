@@ -17,15 +17,18 @@ void updateHeaderRow();
 void lcdPrintLine(uint8_t row, const char *text);
 
 // ==============================
-//  LỌC NHIỄU EMA CHO 4 KÊNH A0..A3
+//  ADS1115 -> HIỂN THỊ 12-BIT (0..4095)
+//  ADS1115 single-ended trả về 0..32767 (15-bit hữu dụng)
+//  Quy đổi về 12-bit kiểu ESP32: raw12 = raw16 / 8  (>>3)
 // ==============================
-static bool  analogFilterInit      = false;
-static float analogFilteredRaw[4]  = {0, 0, 0, 0};   // lưu giá trị ADC đã lọc
-// alpha nhỏ -> mượt hơn, chậm hơn
-static const float ANALOG_FILTER_ALPHA = 0.5f;
+static inline uint16_t ads1115RawTo12bit(int16_t raw16) {
+  if (raw16 <= 0) return 0;
+  if (raw16 >= 32767) return 4095;
+  return (uint16_t)((uint16_t)raw16 >> 3);
+}
 
 // ==============================
-//  BẮT ĐẦU MODE ANALOG
+//  BẮT ĐẦU MODE ANALOG (READ RAW)
 // ==============================
 void startAnalogMode() {
   appState = STATE_ANALOG;
@@ -36,15 +39,14 @@ void startAnalogMode() {
   updateHeaderRow();
 
   lcdPrintLine(1, "ADS1115 Analog A1-3");
-  lcdPrintLine(2, "Gia tri RAW + Volt ");
+  lcdPrintLine(2, "RAW12 (0..4095)+Volt");
   lcdPrintLine(3, "Dang khoi dong...  ");
 
-  analogFilterInit   = false;
-  lastAnalogUpdate   = 0;
+  lastAnalogUpdate = 0;
 }
 
 // ==============================
-//  CẬP NHẬT MODE ANALOG
+//  CẬP NHẬT MODE ANALOG (RAW, NO FILTER)
 // ==============================
 void updateAnalogMode(unsigned long now) {
   // Không có ADS1115 thì báo lỗi, không đọc
@@ -59,43 +61,32 @@ void updateAnalogMode(unsigned long now) {
   if (now - lastAnalogUpdate < ANALOG_UPDATE_INTERVAL) return;
   lastAnalogUpdate = now;
 
-  // Đọc & lọc cho 4 kênh, nhưng chỉ in ra A1..A3
-  for (uint8_t ch = 0; ch < 4; ch++) {
-    int16_t raw = ads1115.readADC_SingleEnded(ch);
-
-    if (!analogFilterInit) {
-      analogFilteredRaw[ch] = raw;
-    } else {
-      analogFilteredRaw[ch] =
-        ANALOG_FILTER_ALPHA * raw +
-        (1.0f - ANALOG_FILTER_ALPHA) * analogFilteredRaw[ch];
-    }
-  }
-  analogFilterInit = true;
-
   char line[21];
 
-  // A1: dùng dòng 1
+  // A1: dòng 1
   {
-    int16_t raw = (int16_t)analogFilteredRaw[1];
-    float   v   = ads1115.computeVolts(raw);
-    snprintf(line, sizeof(line), "A1:%6d %1.3fV", raw, v);
+    int16_t raw16 = ads1115.readADC_SingleEnded(1);     // đọc thô
+    uint16_t raw12 = ads1115RawTo12bit(raw16);          // hiển thị 12-bit
+    float v = ads1115.computeVolts(raw16);              // volt theo gain ADS1115 (giữ nguyên)
+    snprintf(line, sizeof(line), "A1:%4u %1.3fV", (unsigned)raw12, v);
     lcdPrintLine(1, line);
   }
 
-  // A2: dùng dòng 2
+  // A2: dòng 2
   {
-    int16_t raw = (int16_t)analogFilteredRaw[2];
-    float   v   = ads1115.computeVolts(raw);
-    snprintf(line, sizeof(line), "A2:%6d %1.3fV", raw, v);
+    int16_t raw16 = ads1115.readADC_SingleEnded(2);
+    uint16_t raw12 = ads1115RawTo12bit(raw16);
+    float v = ads1115.computeVolts(raw16);
+    snprintf(line, sizeof(line), "A2:%4u %1.3fV", (unsigned)raw12, v);
     lcdPrintLine(2, line);
   }
 
-  // A3: dùng dòng 3
+  // A3: dòng 3
   {
-    int16_t raw = (int16_t)analogFilteredRaw[3];
-    float   v   = ads1115.computeVolts(raw);
-    snprintf(line, sizeof(line), "A3:%6d %1.3fV", raw, v);
+    int16_t raw16 = ads1115.readADC_SingleEnded(3);
+    uint16_t raw12 = ads1115RawTo12bit(raw16);
+    float v = ads1115.computeVolts(raw16);
+    snprintf(line, sizeof(line), "A3:%4u %1.3fV", (unsigned)raw12, v);
     lcdPrintLine(3, line);
   }
 }
